@@ -1,0 +1,20 @@
+# Switchboard cross-agent handoff  2026-11-14T07:37:34.222Z
+# Home: <temp>/agent-home   orchestrator pid=51619
+
+## 1. hermes writes, claude-code finds (markernw7wtil3)
+[hermes] client pid=51620 server pid=51621
+[hermes] memory_write -> { "path": "2026-11-14-handoff-from-hermes.md" }
+[claude-code] client pid=51624 server pid=51625
+[claude-code] memory_search "markernw7wtil3" -> 1 hit(s)
+[claude-code]   2026-11-14-handoff-from-hermes.md  source-title="Handoff from hermes"  snippet="\nWorking on the Switchboard demo. Next step: verify [markernw7wtil3] from the other harness.\n"
+[claude-code] memory_read -> type=handoff tags=switchboard,handoff body="Working on the Switchboard demo. Next step: verify markernw7wtil3 from the other harness."
+
+## 2. claude-code writes, hermes finds (markerrkcgq2t9)
+[claude-code] client pid=51628 server pid=51629
+[claude-code] memory_write -> { "path": "2026-11-14-handoff-from-claude-code.md" }
+[hermes] client pid=51632 server pid=51633
+[hermes] memory_search "markerrkcgq2t9" -> 1 hit(s)
+[hermes]   2026-11-14-handoff-from-claude-code.md  source-title="Handoff from claude-code"  snippet="\nWorking on the Switchboard demo. Next step: verify [markerrkcgq2t9] from the other harness.\n"
+[hermes] memory_read -> type=handoff tags=switchboard,handoff body="Working on the Switchboard demo. Next step: verify markerrkcgq2t9 from the other harness."
+
+RESULT: PASS (4 client processes, each with its own server process)

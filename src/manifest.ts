@@ -37,6 +37,8 @@ export const INTERPRETERS = new Set([
   "sh", "bash", "zsh", "dash", "ksh", "fish", "csh", "tcsh",
   "env", "xargs", "python", "python3", "node", "perl", "ruby", "php", "osascript",
   "awk", "gawk", "sed", "tclsh", "lua", "deno", "bun", "find", "make", "script", "sudo",
+  // anything that can open a connection or run code elsewhere is a tunnel, not a tool
+  "ssh", "scp", "sftp", "nc", "ncat", "netcat", "socat", "telnet",
 ]);
 
 function isInterpreter(program: string): boolean {

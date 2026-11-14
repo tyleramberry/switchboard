@@ -1,7 +1,7 @@
 import { spawn } from "node:child_process";
 import { mkdtempSync, rmSync, appendFileSync, mkdirSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { join, dirname } from "node:path";
+import { join, dirname, basename } from "node:path";
 import { SecretSpec } from "./manifest.js";
 import { SecretStore } from "./secrets/store.js";
 import { Scrubber } from "./scrub.js";
@@ -33,6 +33,27 @@ export class PolicyError extends Error {}
 
 const URL_IN_ARG = /[a-z][a-z0-9+.-]*:\/\/[^\s"'<>]+/gi;
 
+/**
+ * curl flags that would defeat the URL host check or leak by side channel: proxies, config
+ * files, DNS overrides, redirects, output to disk, variable expansion of file contents.
+ * Applies whenever the invoked program is curl; everything else still has to match the
+ * manifest's arg regexes. Prefer the http mode over curl for anything new.
+ */
+const CURL_DENY = new Set([
+  "-x", "--proxy", "--proxy1.0", "--preproxy", "--proxytunnel", "-p",
+  "--connect-to", "--resolve", "--doh-url", "-K", "--config", "-q",
+  "--expand-url", "--expand-connect-to", "--expand-proxy",
+  "-o", "-O", "--output", "--remote-name", "-J",
+  "-T", "--upload-file", "-L", "--location",
+  "--unix-socket", "--abstract-socket",
+]);
+
+/** Programs that speak to the network; their bare-host arguments are host-checked. */
+const NET_TOOLS = new Set(["curl", "wget", "fetch"]);
+
+/** A bare "host" or "host:port" token (with a dot), optionally with scheme/userinfo. */
+const HOSTISH = /^(?:[a-z][a-z0-9+.-]*:\/\/)?(?:[A-Za-z0-9._~%-]+@)?([a-zA-Z0-9](?:[a-zA-Z0-9.-]*[a-zA-Z0-9])?)(?::\d{1,5})?$/;
+
 function hostAllowed(host: string, hosts: string[]): boolean {
   const h = host.toLowerCase().replace(/\.$/, "");
   return hosts.some((a) => h === a || (a.startsWith("*.") && h.endsWith(a.slice(1))));
@@ -46,6 +67,12 @@ export function checkCommand(spec: SecretSpec, argv: string[]): void {
     if (a.includes("\0")) throw new PolicyError("NUL byte in argument");
   }
   const [program, ...args] = argv;
+  const base = basename(program);
+  if (NET_TOOLS.has(base)) {
+    for (const a of args) {
+      if (CURL_DENY.has(a)) throw new PolicyError(`${program} flag ${a} is not allowed (host allowlist could be bypassed)`);
+    }
+  }
   const rule = spec.commands.find((c) => c.program === program);
   if (!rule) {
     throw new PolicyError(
@@ -63,6 +90,15 @@ export function checkCommand(spec: SecretSpec, argv: string[]): void {
         throw new PolicyError(`unparsable URL in argument ${i + 1}`);
       }
       if (!hostAllowed(host, spec.hosts)) throw new PolicyError(`host not allowlisted for ${spec.name}: ${host}`);
+    }
+    // A bare host(:port) argument to a network tool is checked too, so "curl -x 1.2.3.4:8"
+    // or "curl httpbin.org" cannot smuggle a proxy/target past the URL check.
+    if (NET_TOOLS.has(base)) {
+      const m = HOSTISH.exec(a);
+      if (m && m[1].includes(".")) {
+        const host = m[1].toLowerCase();
+        if (!hostAllowed(host, spec.hosts)) throw new PolicyError(`host not allowlisted for ${spec.name}: ${host}`);
+      }
     }
   });
 }

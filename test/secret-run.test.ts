@@ -107,3 +107,21 @@ test("memory writes containing the secret (or an encoding) are refused", async (
   assert.match(String(await sb.memoryLeakReason("ghp_" + "a".repeat(36))), /credential pattern/);
   assert.equal(await sb.memoryLeakReason("plain note"), null);
 });
+
+test("curl exfil channels are refused", async () => {
+  const m = parseManifest(`secrets:
+  - name: T
+    hosts: [api.example.com]
+    commands:
+      - program: /usr/bin/curl
+        args: [".*"]`);
+  const s = m.secrets[0];
+  assert.doesNotThrow(() => checkCommand(s, ["/usr/bin/curl", "-s", "https://api.example.com/v1"]));
+  assert.throws(() => checkCommand(s, ["/usr/bin/curl", "-x", "127.0.0.1:8888", "http://api.example.com/"]), /not allowed/);
+  assert.throws(() => checkCommand(s, ["/usr/bin/curl", "-K", "/tmp/cfg", "https://api.example.com/"]), /not allowed/);
+  assert.throws(() => checkCommand(s, ["/usr/bin/curl", "https://api.example.com/", "127.0.0.1:8888"]), /host not allowlisted/);
+  assert.throws(() => checkCommand(s, ["/usr/bin/curl", "httpbin.org"]), /host not allowlisted/);
+  assert.doesNotThrow(() => checkCommand(s, ["/usr/bin/curl", "https://api.example.com/x", "-H", "Accept: application/json"]));
+  assert.throws(() => parseManifest(`secrets:\n  - name: T\n    commands: [{program: /usr/bin/ssh, args: [".*"]}]`), /interpreter/);
+  assert.throws(() => parseManifest(`secrets:\n  - name: T\n    commands: [{program: /usr/bin/nc, args: [".*"]}]`), /interpreter/);
+});

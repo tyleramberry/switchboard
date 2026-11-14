@@ -1,0 +1,41 @@
+{
+  "name": "switchboard",
+  "version": "0.1.0",
+  "description": "One agent setup (memory, skills, secrets) for every harness",
+  "main": "dist/src/index.js",
+  "scripts": {
+    "typecheck": "tsc --noEmit -p .",
+    "build": "tsc -p .",
+    "test": "tsc -p . && node --test --test-concurrency=1 \"dist/test/**/*.test.js\"",
+    "redteam": "tsc -p . && node dist/redteam/run.js",
+    "handoff": "tsc -p . && node dist/scripts/handoff.js"
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/tyleramberry/switchboard.git"
+  },
+  "keywords": [],
+  "author": "Tyler Amberry",
+  "license": "MIT",
+  "bugs": {
+    "url": "https://github.com/tyleramberry/switchboard/issues"
+  },
+  "homepage": "https://github.com/tyleramberry/switchboard#readme",
+  "dependencies": {
+    "@modelcontextprotocol/sdk": "^1.32.2",
+    "yaml": "^2.9.1",
+    "zod": "^4.6.7"
+  },
+  "devDependencies": {
+    "@types/node": "^26.6.6",
+    "typescript": "^7.0.2"
+  },
+  "type": "module",
+  "bin": {
+    "switchboard": "dist/src/cli.js"
+  },
+  "engines": {
+    "node": ">=22.5"
+  },
+  "private": true
+}

@@ -19,6 +19,7 @@ node dist/src/cli.js init                    # create Home
 node dist/src/cli.js setup hermes --dry-run  # show the diff, change nothing
 node dist/src/cli.js setup hermes            # apply (backs up what it edits)
 node dist/src/cli.js pin                     # pin the secrets manifest (tamper-proofing)
+node dist/src/cli.js doctor                 # lint the manifest (errors on interpreter + catch-all allowlists)
 node dist/src/cli.js mcp                     # the MCP server (harnesses run this)
 ```
 

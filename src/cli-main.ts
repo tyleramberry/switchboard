@@ -1,6 +1,7 @@
 import { readFileSync, existsSync } from "node:fs";
 import { resolveHome, initHome, homePaths } from "./home.js";
-import { loadManifest, writeManifestPin } from "./manifest.js";
+import { loadManifest, writeManifestPin, ManifestError } from "./manifest.js";
+import { lintManifest, formatFindings, DoctorFinding } from "./doctor.js";
 import { createStore } from "./secrets/index.js";
 import { serveStdio, Switchboard, VERSION } from "./server.js";
 import { HARNESSES, runSetup } from "./installers/index.js";
@@ -18,6 +19,7 @@ Usage:
   switchboard secret set <NAME>            store a value read from stdin into the Keychain
   switchboard secret delete <NAME>
   switchboard pin                          pin the secrets manifest (sha256); tampering then fails closed
+  switchboard doctor                       lint the secrets manifest (over-broad allowlists, interpreters, pin state)
   switchboard search <query>               memory_search from the terminal
 `;
 
@@ -61,6 +63,27 @@ export async function main(argv: string[]): Promise<number> {
         const harness = args.shift();
         if (!harness) throw new Error("setup needs a harness name");
         return await runSetup(harness, { root, configDir, dryRun, log: (s) => console.log(s) });
+      }
+      case "doctor": {
+        const p = homePaths(root).manifest;
+        let findings: DoctorFinding[] = [];
+        try {
+          const m = loadManifest(p);
+          // loadManifest's own warnings (unpinned manifest, unsafe interpreter notes) are health facts too
+          findings = [...lintManifest(m), ...m.warnings.map((w) => ({ severity: "warning" as const, message: w, hint: "" }))];
+        } catch (e) {
+          if (e instanceof ManifestError) {
+            findings = [{ severity: "error", message: `manifest not loadable: ${e.message}`, hint: "fix or re-pin the manifest (`switchboard pin`) before any secret can be used" }];
+          } else throw e;
+        }
+        console.log(`switchboard doctor — ${p}`);
+        const lines = formatFindings(findings);
+        if (lines.length) console.log(lines.join("\n").trimStart());
+        else console.log("no findings");
+        const errors = findings.filter((f) => f.severity === "error").length;
+        const warnings = findings.filter((f) => f.severity === "warning").length;
+        console.log(`\n${errors} error(s), ${warnings} warning(s), ${findings.length} finding(s)`);
+        return errors ? 1 : 0;
       }
       case "pin": {
         const p = homePaths(root).manifest;

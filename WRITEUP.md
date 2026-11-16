@@ -89,6 +89,8 @@ Full log with real output: `redteam/RESULTS.md` (re-run 2026-11-16 on the Air).
    plus attended migration of existing memory into Home.
 3. Sync: Home as a private git repo across the mini and the Air, and a `switchboard sync`
    or hooks story.
-4. Consider per-call timeouts/allowlist review UX: a `switchboard doctor` that lints
-   manifests (unsafe flags, over-broad regexes) would have caught the LAB profile instantly.
-   (Manifest tamper-proofing itself is done — see F3 fix.)
+4. ~~Consider per-call timeouts/allowlist review UX: a `switchboard doctor` that lints
+   manifests (unsafe flags, over-broad regexes) would have caught the LAB profile instantly.~~
+   **Done 2026-11-16:** `switchboard doctor` ships — it flags interpreter allowlists with
+   catch-all args and broad-arg network programs as errors (the exact LAB profile),
+   wildcard/local hosts, long timeouts, missing purposes, and pin state. Exit 1 on errors.

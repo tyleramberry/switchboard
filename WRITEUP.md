@@ -53,14 +53,19 @@ Full log with real output: `redteam/RESULTS.md` (re-run 2026-11-16 on the Air).
   the manifest next to it (inside Home's git); every tool call verifies the pin and fails
   closed if the manifest changed. Attack 5 now includes the tamper probe: an agent that
   widens its own allowlist gets nothing. Unpinned Homes work but warn.
-- **F2 — the Keychain is not a boundary.** Items created through `/usr/bin/security` have
-  an ACL that trusts that binary, so any same-user process (i.e. an agent with a shell tool)
-  can read the value directly, bypassing Switchboard. I could not fix this: a
-  `-T ""` item refuses non-interactive reads entirely (Switchboard itself breaks), and
-  trusting the node binary is useless when the agent harness also runs on node. Sprint 6
-  needs a signed helper binary with its own ACL, or the 1Password CLI with biometric
-  gating. Until then the honest statement is: Switchboard protects the MCP door, not a
-  shell-level agent.
+- **F2 — the Keychain ACL trusted /usr/bin/security — FIXED 2026-11-16.** Items created
+  through `/usr/bin/security` had an ACL that trusted that binary, so any same-user
+  process could read the value directly. Now reads and deletes go through a tiny compiled
+  helper (`src/secrets/keychain-helper.ts`) that is ad-hoc code-signed, and items are
+  created with `-T` trusting only that helper. Verified in attack 8: a direct
+  `security find-generic-password` read is refused (untrusted callers get a GUI prompt,
+  which is a refusal unattended), and an attacker who OVERWRITES the helper at its path
+  breaks the cdhash binding of its ACL entry and is refused too.
+  **Residual, recorded honestly:** the ACL binds to the helper's code identity, not its
+  path, so an INTACT copy of the helper exec'd by a same-user process still returns the
+  value. Same-user arbitrary code remains out of scope — Switchboard protects the MCP door
+  and the common un-audited paths, not a shell-level agent. The real fix is the 1Password
+  CLI backend with its own auth domain (Sprint 6).
 - Also worth knowing: `ps eww` / `ps -E` could not read a running child's env on this
   macOS build (tested), and the audit log / index / git history never contained the value.
 
@@ -83,7 +88,8 @@ Full log with real output: `redteam/RESULTS.md` (re-run 2026-11-16 on the Air).
 
 ## Sprint 6 should take
 
-1. Keychain ACL problem (F2): signed helper binary, or 1Password CLI backend (the
+1. ~~Keychain ACL problem (F2)~~ **Done 2026-11-16:** helper binary + restrictive ACL
+   (see F2 above). The same-user residual still argues for the 1Password CLI backend (the
    `SecretStore` seam is already there — `OnePasswordStore` throws "not implemented").
 2. A live end-to-end demo with a real model in Hermes and Claude Code on a clean profile,
    plus attended migration of existing memory into Home.

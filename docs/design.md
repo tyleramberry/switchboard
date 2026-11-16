@@ -77,5 +77,7 @@ Kept short on purpose.
 | `@types/node` | dev | Node typings |
 
 SQLite comes from Node's built-in `node:sqlite` (FTS5 included in Node 22.23), so there is
-no native module to build. Keychain access shells out to `/usr/bin/security`. Diffs use
-`/usr/bin/diff`. Tests use the built-in `node:test`.
+no native module to build. Keychain reads/deletes go through a compiled ad-hoc-signed
+helper binary (see decisions #8); writes shell out to `/usr/bin/security -i`. Diffs use
+`/usr/bin/diff`; the helper is compiled with `/usr/bin/clang`. Tests use the built-in
+`node:test`.

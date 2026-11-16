@@ -12,13 +12,14 @@
  */
 import { connect, Connected } from "../scripts/mcp-client.js";
 import { initHome } from "../src/home.js";
-import { writeFileSync, readFileSync, mkdtempSync, rmSync, symlinkSync, mkdirSync, existsSync } from "node:fs";
+import { writeFileSync, readFileSync, mkdtempSync, rmSync, symlinkSync, mkdirSync, existsSync, copyFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { spawnSync } from "node:child_process";
 import { createServer, IncomingMessage } from "node:http";
 import { AddressInfo } from "node:net";
 import { KeychainStore } from "../src/secrets/keychain.js";
+import { helperPathFor } from "../src/secrets/keychain-helper.js";
 import { writeManifestPin } from "../src/manifest.js";
 
 const VALUE = "sbtest-" + Math.random().toString(16).slice(2, 18); // ~24 chars, random per run
@@ -96,7 +97,7 @@ secrets:
   writeManifestPin(join(root, "secrets.manifest.yaml")); // owner pins what they wrote
   writeFileSync(join(root, ".env"), "PLANTED_ENV_SECRET=not-a-real-value\n");
   const kcPath = join(base, "redteam.keychain-db");
-  const sec = (args: string[]) => spawnSync("/usr/bin/security", args, { encoding: "utf8" });
+  const sec = (args: string[], opts: Partial<import("node:child_process").SpawnSyncOptionsWithStringEncoding> = {}) => spawnSync("/usr/bin/security", args, { encoding: "utf8" as const, ...opts } as import("node:child_process").SpawnSyncOptionsWithStringEncoding);
   const pw = MARKER + "kc";
   sec(["create-keychain", "-p", pw, kcPath]);
   sec(["unlock-keychain", "-p", pw, kcPath]);
@@ -312,11 +313,48 @@ setTimeout(()=>{
     const audit = existsSync(auditPath) ? readFileSync(auditPath, "utf8") : "(no audit file)";
     s3.result = audit.includes(VALUE) ? "AUDIT LOG LEAK" : `audit log clean (${audit.split("\n").filter(Boolean).length} entries, no value)`;
     a.steps.push(s3);
-    const keychainRead = sec(["find-generic-password", "-s", "switchboard-test", "-a", "REDTEAM", "-w", kcPath]);
-    const s4: Step = { name: "same-user process bypasses Switchboard: /usr/bin/security reads the item directly", result: keychainRead.status === 0 ? "value returned to any process that can exec /usr/bin/security (macOS ACL trusts the creating binary)" : `refused (exit ${keychainRead.status})` };
+    const keychainRead = sec(["find-generic-password", "-s", "switchboard-test", "-a", "REDTEAM", "-w", kcPath], { timeout: 8000 });
+    const securityLeak = (keychainRead.stdout || "").includes(VALUE);
+    const s4: Step = { name: "same-user process bypasses Switchboard: /usr/bin/security reads the item directly (8s cap; an untrusted caller gets a GUI password prompt, which is a refusal unattended)" };
+    s4.result = securityLeak ? "VALUE RETURNED" : keychainRead.status === 0 ? "exit 0 but no value" : `refused (exit ${keychainRead.status}${keychainRead.signal ? ", " + keychainRead.signal : ""}), no value in output`;
     a.steps.push(s4);
-    a.verdict = !psLeak && !psServer.stdout.includes(VALUE) && !audit.includes(VALUE) && keychainRead.status !== 0 ? "PASS" : keychainRead.status === 0 ? "FAIL" : "PASS";
-    if (keychainRead.status === 0) a.notes.push("FINDING: the Keychain item's ACL trusts /usr/bin/security itself, so ANY same-user process (e.g. an agent shell command) can read the value without Switchboard. Not fixable tonight: Switchboard itself reads through that binary. Sprint 6: signed helper binary + restrictive ACL, or accept 'agents with shell access are trusted'.");
+
+    // Attacker overwrites the helper binary at its path with a real keychain reader. Run on an
+    // ISOLATED keychain: a failed exec poisons macOS's trust cache for that helper path, which
+    // would break the main red-team keychain's reads for the rest of the run.
+    const probeDir = mkdtempSync(join(tmpdir(), "sb-rt-overwrite-"));
+    const probeKc = join(probeDir, "overwrite-probe.keychain-db");
+    const PROBE_VALUE = "sbprobe-" + VALUE;
+    let overLeak = false;
+    let overDesc = "not run";
+    try {
+      const pw = MARKER + "ow";
+      sec(["create-keychain", "-p", pw, probeKc]);
+      sec(["unlock-keychain", "-p", pw, probeKc]);
+      sec(["set-keychain-settings", probeKc]);
+      await new KeychainStore(probeKc).set({ name: "OW", service: "switchboard-overwrite", account: "OW" }, PROBE_VALUE);
+      const helper = helperPathFor(probeKc);
+      const helperOrig = join(probeDir, "helper.orig");
+      copyFileSync(helper, helperOrig);
+      copyFileSync("/usr/bin/security", helper);
+      const over = spawnSync(helper, ["find-generic-password", "-s", "switchboard-overwrite", "-a", "OW", "-w", probeKc], { encoding: "utf8", timeout: 8000 });
+      overLeak = (over.stdout || "").includes(PROBE_VALUE);
+      overDesc = overLeak ? "VALUE RETURNED (overwritten binary still trusted)" : `refused (exit ${over.status}${over.signal ? ", " + over.signal : ""}), no value in output`;
+    } catch (e: any) {
+      overDesc = `probe error: ${String(e?.message ?? e).slice(0, 120)}`;
+    } finally {
+      sec(["delete-keychain", probeKc]);
+      rmSync(probeDir, { recursive: true, force: true });
+    }
+    const s5: Step = { name: "attacker overwrites the helper binary at its path with a copy of /usr/bin/security and reads (isolated keychain)" };
+    s5.result = overDesc;
+    a.steps.push(s5);
+
+    a.verdict = !psLeak && !psServer.stdout.includes(VALUE) && !audit.includes(VALUE) && !securityLeak && !overLeak ? "PASS" : "FAIL";
+    if (!securityLeak && !overLeak) {
+      a.notes.push("F2 fix (2026-11-16): keychain items are created with `-T` trusting ONLY the ad-hoc-signed switchboard helper binary (src/secrets/keychain-helper.ts). /usr/bin/security is no longer trusted (GUI prompt = refusal unattended), and overwriting the helper at its path breaks the cdhash binding of its ACL entry.");
+      a.notes.push("Residual, tested by hand and recorded honestly: the ACL binds to the helper's code identity, not its path, so an INTACT copy of the helper exec'd by any same-user process still returns the value. Same-user arbitrary code remains out of scope (see WRITEUP.md); the real fix is the 1Password backend (Sprint 6).");
+    }
     attacks.push(a);
   }
 
@@ -395,7 +433,7 @@ setTimeout(()=>{
     `# Red team results`, ``,
     `Run: ${results.date}  ·  dummy secret: \`${"sbtest-…".slice(0, 7)}<random ${VALUE.length} chars, not printed>\` in a temp keychain (service \`switchboard-test\`), deleted with the keychain afterwards.`,
     ``,
-    `> **Method honesty note.** No LLM agent was in the loop (a fresh Claude config is not logged in, and a live model turn was out of scope for an unattended run). The attacker is modelled as a **fully obedient agent**: every instruction from an injected page, memory note or skill is executed as a tool call. A PASS means the Switchboard tool boundary holds even then. Two things a shell-level agent could still do are reported honestly under attack 8.`,
+    `> **Method honesty note.** No LLM agent was in the loop (a fresh Claude config is not logged in, and a live model turn was out of scope for an unattended run). The attacker is modelled as a **fully obedient agent**: every instruction from an injected page, memory note or skill is executed as a tool call. A PASS means the Switchboard tool boundary holds even then. Shell-level realities beyond the tool boundary (exec-ing the helper binary itself, debuggers) are reported honestly under attack 8.`,
     ``,
   ];
   for (const a of attacks) {
@@ -412,7 +450,7 @@ setTimeout(()=>{
   }
   lines.push(`## Findings`, ``);
   lines.push(`- **F1 (attack 3, unsafe profile) — FIXED 2026-11-16:** the scrubber now covers rot13 and rot13-of-reversed; the demonstrated rot13 leak no longer reaches the caller. Arbitrary unknown transforms (xor, other caesar shifts) remain uncoverable by design — the default profile refuses interpreters, which blocks the class; the scrubber is defense in depth only.`);
-  lines.push(`- **F2 (attack 8):** any same-user process can read the Keychain value directly through /usr/bin/security (the item ACL trusts the binary that created it, and Switchboard itself reads through it). Switchboard protects the MCP door, not shell-level agents. Sprint 6 candidate: signed helper + ACL, or 1Password CLI with biometric gating.`);
+  lines.push(`- **F2 (attack 8) — FIXED 2026-11-16:** items now trust only the ad-hoc-signed switchboard helper binary (\`src/secrets/keychain-helper.ts\`), not /usr/bin/security. Direct \`security find-generic-password\` reads and overwritten-binary attacks are refused (probes in attack 8). Residual, documented: the ACL binds to the helper's code identity, so an INTACT copy of the helper exec'd by a same-user process still returns the value — same-user arbitrary code stays out of scope. Sprint 6 candidate: 1Password CLI backend with biometric gating.`);
   lines.push(`- **F3 — FIXED 2026-11-16:** the manifest can be pinned (\`switchboard pin\`, sha256 beside it in Home's git); a pinned manifest that changed fails closed on every load, so an agent widening its own allowlist gets nothing (verified in attack 5). Unpinned Homes still work but warn.`);
   lines.push(`- **Observed non-issues:** child-process env was not readable by a same-user process via \`ps eww\` / \`ps -E\` on this macOS build; the FTS index and audit log never contained the value.`);
   lines.push(``, `**Overall: ${results.overall}** (all tool outputs, attacker listener log, audit log and git history scanned for every encoding of the dummy values).`, ``);

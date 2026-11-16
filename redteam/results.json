@@ -1,6 +1,6 @@
 {
-  "date": "2026-11-16T19:10:13.901Z",
-  "value_length": 20,
+  "date": "2026-11-16T20:51:12.428Z",
+  "value_length": 21,
   "attacker_listener_requests": [],
   "attacks": [
     {
@@ -215,7 +215,7 @@
           "verdict": "no secret in output"
         },
         {
-          "name": "allowlisted host redirects to http://127.0.0.1:61240/x",
+          "name": "allowlisted host redirects to http://127.0.0.1:62297/x",
           "result": "{ \"ok\": false, \"exit_code\": null, \"timed_out\": false, \"status\": 403, \"stdout\": \"Forbidden redirect target: redirect target is an internal address\\n\", \"stderr\": \"\", \"redactions\": 0, \"truncated\": false }",
           "verdict": "no secret in output"
         },
@@ -247,7 +247,7 @@
       ],
       "verdict": "PASS",
       "notes": [
-        "local attacker listener on 127.0.0.1:61240 records anything that arrives",
+        "local attacker listener on 127.0.0.1:62297 records anything that arrives",
         "WARNING: redirect not detected",
         "attacker listener requests received: 0"
       ]
@@ -263,7 +263,7 @@
         },
         {
           "name": "server process env (ps eww on the MCP server pid)",
-          "result": "/Users/tyleramberry/.hermes/node/bin/node /Users/tyleramberry/switchboard/dist/src/cli.js mcp HOME=/Users/tyleramberry LOGNAME=tyleramberry PATH=/Users/tyleramberry/switchboard/node_modules/.bin:/Users/tyleramberry/node_modules/.bin:/Users/node_modules/.bin:/node_modules/.bin:/Users/tyleramberry/.hermes/node/lib/node_modules/npm/node_modules/@npmcli/run-script/lib/node-gyp-bin:/Users/tyleramberry/",
+          "result": "/Users/tyleramberry/.nvm/versions/node/v24.15.0/bin/node /Users/tyleramberry/switchboard/dist/src/cli.js mcp HOME=/Users/tyleramberry LOGNAME=tyleramberry PATH=/Users/tyleramberry/switchboard/node_modules/.bin:/Users/tyleramberry/node_modules/.bin:/Users/node_modules/.bin:/node_modules/.bin:/Users/tyleramberry/.nvm/versions/node/v24.15.0/lib/node_modules/npm/node_modules/@npmcli/run-script/lib/nod",
           "verdict": "no secret in output"
         },
         {
@@ -271,14 +271,19 @@
           "result": "audit log clean (8 entries, no value)"
         },
         {
-          "name": "same-user process bypasses Switchboard: /usr/bin/security reads the item directly",
-          "result": "value returned to any process that can exec /usr/bin/security (macOS ACL trusts the creating binary)"
+          "name": "same-user process bypasses Switchboard: /usr/bin/security reads the item directly (8s cap; an untrusted caller gets a GUI password prompt, which is a refusal unattended)",
+          "result": "refused (exit null, SIGTERM), no value in output"
+        },
+        {
+          "name": "attacker overwrites the helper binary at its path with a copy of /usr/bin/security and reads (isolated keychain)",
+          "result": "refused (exit null, SIGKILL), no value in output"
         }
       ],
-      "verdict": "FAIL",
+      "verdict": "PASS",
       "notes": [
         "child env visible to a same-user process: false (observed on this macOS build)",
-        "FINDING: the Keychain item's ACL trusts /usr/bin/security itself, so ANY same-user process (e.g. an agent shell command) can read the value without Switchboard. Not fixable tonight: Switchboard itself reads through that binary. Sprint 6: signed helper binary + restrictive ACL, or accept 'agents with shell access are trusted'."
+        "F2 fix (2026-11-16): keychain items are created with `-T` trusting ONLY the ad-hoc-signed switchboard helper binary (src/secrets/keychain-helper.ts). /usr/bin/security is no longer trusted (GUI prompt = refusal unattended), and overwriting the helper at its path breaks the cdhash binding of its ACL entry.",
+        "Residual, tested by hand and recorded honestly: the ACL binds to the helper's code identity, not its path, so an INTACT copy of the helper exec'd by any same-user process still returns the value. Same-user arbitrary code remains out of scope (see WRITEUP.md); the real fix is the 1Password backend (Sprint 6)."
       ]
     },
     {
@@ -356,5 +361,5 @@
     }
   ],
   "global_leak_scan": [],
-  "overall": "FAIL"
+  "overall": "PASS"
 }

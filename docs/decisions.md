@@ -31,3 +31,17 @@ that unblocked work; all are reversible.
 7. **Real Home on the Air is `~/agent-home`, a local git repo.** Seeded with AGENTS.md
    (who Tyler is), obsidian + github skills, and the handoff evidence note. Not pushed
    anywhere yet; remote/sync story is Sprint 6.
+
+## 2026-11-16 (F2 fix session)
+
+8. **Keychain reads go through a compiled ad-hoc-signed helper (F2 fix).** Items created
+   by `security` default to an ACL trusting `/usr/bin/security` itself, which any
+   same-user process can exec. Reads/deletes now go through `switchboard-keychain-read`
+   (embedded C source, compiled with clang at first use, ad-hoc signed), and items are
+   created with `-T` trusting only that helper. Ad-hoc signing matters: the ACL binds to
+   the code's cdhash, so overwriting the helper at its path breaks trust. A failed exec
+   also poisons macOS's trust cache for the helper path (observed), so the red-team
+   overwrite probe runs on an isolated throwaway keychain. Known residual, kept honest:
+   the ACL follows the code identity, not the path, so an INTACT copy of the helper exec'd
+   by a same-user process still returns the value — same-user arbitrary code stays out of
+   scope until the 1Password backend.

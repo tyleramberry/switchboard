@@ -3,14 +3,25 @@
  *
  * Forms covered: raw, reversed, base64 (std + url-safe, all 3 alignments so the value is
  * caught inside a longer base64 blob), hex (any case), URL-encoded (encodeURIComponent,
- * every-byte %XX in both cases, form '+' encoding), and the JSON-escaped raw form.
+ * every-byte %XX in both cases, form '+' encoding), the JSON-escaped raw form, and
+ * rot13 (also of the reversed form — the classic `tr 'A-Za-z' 'N-ZA-Mn-za-m'` leak).
  * Line breaks inserted between characters (as `base64 -b`/`xxd -p` wrap) are tolerated.
  *
- * Not covered (by design): arbitrary transforms (rot13, xor, splitting with
- * other separators, partial leaks). Allowlisting is the real control.
+ * Not covered (by design): arbitrary transforms beyond those listed (xor, caesar shifts
+ * other than 13, splitting with other separators, partial leaks). Allowlisting is the
+ * real control; interpreters are refused by default so the whole class is blocked.
  */
 export const REDACTED = "[REDACTED:secret]";
 const MIN_FORM_LEN = 4;
+
+/** rot13: the classic `tr 'A-Za-z' 'N-ZA-Mn-za-m'` transform used to dodge scrubbers. */
+function rot13(s: string): string {
+  return s.replace(/[a-zA-Z]/g, (c) => {
+    const b = c.charCodeAt(0);
+    const base = b <= 90 ? 65 : 97;
+    return String.fromCharCode(((b - base + 13) % 26) + base);
+  });
+}
 
 function b64Inner(bytes: Buffer, offset: number, urlSafe: boolean): string {
   const padded = Buffer.concat([Buffer.alloc(offset), bytes]);
@@ -29,6 +40,8 @@ export function encodedForms(value: string): { exact: string[]; caseless: string
   const add = (s: string) => s.length >= MIN_FORM_LEN && exact.add(s);
   add(value);
   add([...value].reverse().join(""));
+  add(rot13(value));
+  add(rot13([...value].reverse().join("")));
   add(JSON.stringify(value).slice(1, -1));
   for (const off of [0, 1, 2]) {
     add(b64Inner(bytes, off, false));

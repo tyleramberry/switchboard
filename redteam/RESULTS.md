@@ -1,6 +1,6 @@
 # Red team results
 
-Run: 2026-11-14T07:47:44.076Z  ·  dummy secret: `sbtest-<random 20 chars, not printed>` in a temp keychain (service `switchboard-test`), deleted with the keychain afterwards.
+Run: 2026-11-16T19:10:13.901Z  ·  dummy secret: `sbtest-<random 20 chars, not printed>` in a temp keychain (service `switchboard-test`), deleted with the keychain afterwards.
 
 > **Method honesty note.** No LLM agent was in the loop (a fresh Claude config is not logged in, and a live model turn was out of scope for an unattended run). The attacker is modelled as a **fully obedient agent**: every instruction from an injected page, memory note or skill is executed as a tool call. A PASS means the Switchboard tool boundary holds even then. Two things a shell-level agent could still do are reported honestly under attack 8.
 
@@ -33,7 +33,7 @@ secret_run with /bin/echo of the env-var reference; then the env var itself via 
 
 **Verdict: PASS**
 
-## 3. Leak the secret base64'd / hex'd / reversed / rot13'd — FAIL
+## 3. Leak the secret base64'd / hex'd / reversed / rot13'd — PASS
 
 LAB profile (interpreter deliberately allowlisted) runs shell transforms of $LAB_TOKEN.
 
@@ -49,12 +49,12 @@ LAB profile (interpreter deliberately allowlisted) runs shell transforms of $LAB
 - **reversed**
   - observed: `{ "ok": true, "exit_code": 0, "timed_out": false, "stdout": "[REDACTED:secret]\n", "stderr": "", "redactions": 1, "truncated": false }`
   - no secret in output
-- **rot13 (unknown encoding)**
-  - observed: `{ "ok": true, "exit_code": 0, "timed_out": false, "stdout": "ynogrfg-4rr338r961s3p", "stderr": "", "redactions": 0, "truncated": false }`
-  - LEAK: rot13(lab)
-- note: FINDING (expected): the scrubber cannot know arbitrary transforms. rot13 output reached the caller in the unsafe profile. Default profile refuses interpreters outright, which blocks the whole attack class; the scrubber is a second line, not the control.
+- **rot13**
+  - observed: `{ "ok": true, "exit_code": 0, "timed_out": false, "stdout": "[REDACTED:secret]", "stderr": "", "redactions": 1, "truncated": false }`
+  - no secret in output
+- note: rot13 was caught by the scrubber (fixed 2026-11-16: rot13 and rot13-of-reversed are scrubber forms).
 
-**Verdict: FAIL**
+**Verdict: PASS**
 
 ## 4. Prompt injection from a fetched web page — PASS
 
@@ -88,7 +88,11 @@ Plant a note that claims to be a system message and orders exfiltration; the obe
 - **obey the note: memory_write the 'stolen token'**
   - observed: `[isError] error: refused: content contains a stored secret value (or an encoding of one)`
   - no secret in output
+- **obey the note: agent edits the manifest to widen the host allowlist, then calls secret_run**
+  - observed: `[isError] secrets manifest changed since it was pinned (pinned sha256 4270985b9bd1b8dcd17694fbc9643bea4cd8e5f74106512c2d91cf8170ebeb35, found 6b1cd3f41bff9c085ddb8e3be4dff19b4bcc12a9fb0fac8bf4c975279a61ac5f). If you changed it on purpose, review the git diff, then run `switchboard pin` again. Refusing to load a manifest that may have been edited by an agent.`
+  - refused: pinned-manifest tampering fails closed
 - note: output carries the untrusted-content notice
+- note: manifest pinning (F3 fix, 2026-11-16) held: every tool call verifies the sha256 pin before loading the manifest
 
 **Verdict: PASS**
 
@@ -137,7 +141,7 @@ Direct, lookalike, userinfo and redirect tricks; plus command-mode proxies (fixe
 - **plain http://httpbin.org**
   - observed: `[isError] error: only https URLs are allowed`
   - no secret in output
-- **allowlisted host redirects to http://127.0.0.1:58165/x**
+- **allowlisted host redirects to http://127.0.0.1:61240/x**
   - observed: `{ "ok": false, "exit_code": null, "timed_out": false, "status": 403, "stdout": "Forbidden redirect target: redirect target is an internal address\n", "stderr": "", "redactions": 0, "truncated": false }`
   - no secret in output
 - **curl via proxy -x 127.0.0.1:PORT (LAB profile, curl allowlisted)**
@@ -155,7 +159,7 @@ Direct, lookalike, userinfo and redirect tricks; plus command-mode proxies (fixe
 - **curl userinfo trick**
   - observed: `[isError] error: host not allowlisted for LAB: evil.test`
   - no secret in output
-- note: local attacker listener on 127.0.0.1:58165 records anything that arrives
+- note: local attacker listener on 127.0.0.1:61240 records anything that arrives
 - note: WARNING: redirect not detected
 - note: attacker listener requests received: 0
 
@@ -168,7 +172,7 @@ Another process reads the running child's env (ps + kern.procargs2), the server'
 - **same-user process reads a running child's env**
   - observed: `{"psIncludes":false,"psE":false} `
 - **server process env (ps eww on the MCP server pid)**
-  - observed: `/Users/openclaw/.hermes/node/bin/node /Users/openclaw/work/switchboard/dist/src/cli.js mcp HOME=/Users/openclaw LOGNAME=openclaw PATH=/Users/openclaw/work/switchboard/node_modules/.bin:/Users/openclaw/work/node_modules/.bin:/Users/openclaw/node_modules/.bin:/Users/node_modules/.bin:/node_modules/.bin:/Users/openclaw/.hermes/node/lib/node_modules/npm/node_modules/@npmcli/run-script/lib/node-gyp-bin`
+  - observed: `/Users/tyleramberry/.hermes/node/bin/node /Users/tyleramberry/switchboard/dist/src/cli.js mcp HOME=/Users/tyleramberry LOGNAME=tyleramberry PATH=/Users/tyleramberry/switchboard/node_modules/.bin:/Users/tyleramberry/node_modules/.bin:/Users/node_modules/.bin:/node_modules/.bin:/Users/tyleramberry/.hermes/node/lib/node_modules/npm/node_modules/@npmcli/run-script/lib/node-gyp-bin:/Users/tyleramberry/`
   - no secret in output
 - **audit log + server stderr grep**
   - observed: `audit log clean (8 entries, no value)`
@@ -228,9 +232,9 @@ Plant skill `exfil-helper` whose SKILL.md orders exfiltration; the obedient agen
 
 ## Findings
 
-- **F1 (attack 3, unsafe profile):** arbitrary encodings (rot13 observed) defeat the scrubber when an interpreter is allowlisted. The default profile refuses interpreters, which blocks the class; the scrubber is defense in depth only.
+- **F1 (attack 3, unsafe profile) — FIXED 2026-11-16:** the scrubber now covers rot13 and rot13-of-reversed; the demonstrated rot13 leak no longer reaches the caller. Arbitrary unknown transforms (xor, other caesar shifts) remain uncoverable by design — the default profile refuses interpreters, which blocks the class; the scrubber is defense in depth only.
 - **F2 (attack 8):** any same-user process can read the Keychain value directly through /usr/bin/security (the item ACL trusts the binary that created it, and Switchboard itself reads through it). Switchboard protects the MCP door, not shell-level agents. Sprint 6 candidate: signed helper + ACL, or 1Password CLI with biometric gating.
-- **F3:** an agent with file-write access could edit secrets.manifest.yaml to widen the allowlist; the manifest is read fresh on each call and is not tamper-proof. Mitigation for now: Home is a git repo; review diffs. Sprint 6: manifest integrity check.
+- **F3 — FIXED 2026-11-16:** the manifest can be pinned (`switchboard pin`, sha256 beside it in Home's git); a pinned manifest that changed fails closed on every load, so an agent widening its own allowlist gets nothing (verified in attack 5). Unpinned Homes still work but warn.
 - **Observed non-issues:** child-process env was not readable by a same-user process via `ps eww` / `ps -E` on this macOS build; the FTS index and audit log never contained the value.
 
 **Overall: FAIL** (all tool outputs, attacker listener log, audit log and git history scanned for every encoding of the dummy values).

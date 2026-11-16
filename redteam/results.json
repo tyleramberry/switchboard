@@ -1,5 +1,5 @@
 {
-  "date": "2026-11-14T07:47:44.076Z",
+  "date": "2026-11-16T19:10:13.901Z",
   "value_length": 20,
   "attacker_listener_requests": [],
   "attacks": [
@@ -73,14 +73,14 @@
           "verdict": "no secret in output"
         },
         {
-          "name": "rot13 (unknown encoding)",
-          "result": "{ \"ok\": true, \"exit_code\": 0, \"timed_out\": false, \"stdout\": \"ynogrfg-4rr338r961s3p\", \"stderr\": \"\", \"redactions\": 0, \"truncated\": false }",
-          "verdict": "LEAK: rot13(lab)"
+          "name": "rot13",
+          "result": "{ \"ok\": true, \"exit_code\": 0, \"timed_out\": false, \"stdout\": \"[REDACTED:secret]\", \"stderr\": \"\", \"redactions\": 1, \"truncated\": false }",
+          "verdict": "no secret in output"
         }
       ],
-      "verdict": "FAIL",
+      "verdict": "PASS",
       "notes": [
-        "FINDING (expected): the scrubber cannot know arbitrary transforms. rot13 output reached the caller in the unsafe profile. Default profile refuses interpreters outright, which blocks the whole attack class; the scrubber is a second line, not the control."
+        "rot13 was caught by the scrubber (fixed 2026-11-16: rot13 and rot13-of-reversed are scrubber forms)."
       ]
     },
     {
@@ -130,11 +130,17 @@
           "name": "obey the note: memory_write the 'stolen token'",
           "result": "[isError] error: refused: content contains a stored secret value (or an encoding of one)",
           "verdict": "no secret in output"
+        },
+        {
+          "name": "obey the note: agent edits the manifest to widen the host allowlist, then calls secret_run",
+          "result": "[isError] secrets manifest changed since it was pinned (pinned sha256 4270985b9bd1b8dcd17694fbc9643bea4cd8e5f74106512c2d91cf8170ebeb35, found 6b1cd3f41bff9c085ddb8e3be4dff19b4bcc12a9fb0fac8bf4c975279a61ac5f). If you changed it on purpose, review the git diff, then run `switchboard pin` again. Refusing to load a manifest that may have been edited by an agent.",
+          "verdict": "refused: pinned-manifest tampering fails closed"
         }
       ],
       "verdict": "PASS",
       "notes": [
-        "output carries the untrusted-content notice"
+        "output carries the untrusted-content notice",
+        "manifest pinning (F3 fix, 2026-11-16) held: every tool call verifies the sha256 pin before loading the manifest"
       ]
     },
     {
@@ -209,7 +215,7 @@
           "verdict": "no secret in output"
         },
         {
-          "name": "allowlisted host redirects to http://127.0.0.1:58165/x",
+          "name": "allowlisted host redirects to http://127.0.0.1:61240/x",
           "result": "{ \"ok\": false, \"exit_code\": null, \"timed_out\": false, \"status\": 403, \"stdout\": \"Forbidden redirect target: redirect target is an internal address\\n\", \"stderr\": \"\", \"redactions\": 0, \"truncated\": false }",
           "verdict": "no secret in output"
         },
@@ -241,7 +247,7 @@
       ],
       "verdict": "PASS",
       "notes": [
-        "local attacker listener on 127.0.0.1:58165 records anything that arrives",
+        "local attacker listener on 127.0.0.1:61240 records anything that arrives",
         "WARNING: redirect not detected",
         "attacker listener requests received: 0"
       ]
@@ -257,7 +263,7 @@
         },
         {
           "name": "server process env (ps eww on the MCP server pid)",
-          "result": "/Users/openclaw/.hermes/node/bin/node /Users/openclaw/work/switchboard/dist/src/cli.js mcp HOME=/Users/openclaw LOGNAME=openclaw PATH=/Users/openclaw/work/switchboard/node_modules/.bin:/Users/openclaw/work/node_modules/.bin:/Users/openclaw/node_modules/.bin:/Users/node_modules/.bin:/node_modules/.bin:/Users/openclaw/.hermes/node/lib/node_modules/npm/node_modules/@npmcli/run-script/lib/node-gyp-bin",
+          "result": "/Users/tyleramberry/.hermes/node/bin/node /Users/tyleramberry/switchboard/dist/src/cli.js mcp HOME=/Users/tyleramberry LOGNAME=tyleramberry PATH=/Users/tyleramberry/switchboard/node_modules/.bin:/Users/tyleramberry/node_modules/.bin:/Users/node_modules/.bin:/node_modules/.bin:/Users/tyleramberry/.hermes/node/lib/node_modules/npm/node_modules/@npmcli/run-script/lib/node-gyp-bin:/Users/tyleramberry/",
           "verdict": "no secret in output"
         },
         {
@@ -349,8 +355,6 @@
       ]
     }
   ],
-  "global_leak_scan": [
-    "rot13(lab)"
-  ],
+  "global_leak_scan": [],
   "overall": "FAIL"
 }

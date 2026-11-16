@@ -18,6 +18,7 @@ export SWITCHBOARD_HOME=~/agent-home        # default if unset
 node dist/src/cli.js init                    # create Home
 node dist/src/cli.js setup hermes --dry-run  # show the diff, change nothing
 node dist/src/cli.js setup hermes            # apply (backs up what it edits)
+node dist/src/cli.js pin                     # pin the secrets manifest (tamper-proofing)
 node dist/src/cli.js mcp                     # the MCP server (harnesses run this)
 ```
 
@@ -29,6 +30,7 @@ $SWITCHBOARD_HOME/
   memory/                 markdown notes with frontmatter (type, tags, date)
   skills/<name>/SKILL.md  standard skill folders shared by all harnesses
   secrets.manifest.yaml   secret NAMES, purposes and allowlists. Never values.
+  secrets.manifest.sha256 optional pin (`switchboard pin`): tampering then fails closed
   .switchboard/           derived state (SQLite FTS index); safe to delete
 ```
 

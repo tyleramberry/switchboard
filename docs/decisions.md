@@ -16,3 +16,18 @@ that unblocked work; all are reversible.
    `switchboard-test` item; it is created with service `switchboard-test` inside a temp
    keychain (`security create-keychain`) and the whole keychain is deleted afterwards.
    `SWITCHBOARD_KEYCHAIN` selects the keychain file.
+
+## 2026-11-16 (attended Air session)
+
+5. **Manifest pinning (F3 fix): sha256 pin beside the manifest, not a signature.** The pin
+   file lives in Home (git-tracked), so editing or deleting it shows in the diff — the
+   same trust root as the manifest itself. `switchboard pin` is the only writer; unpinned
+   Homes load with a warning instead of failing (backwards compatible, and pinning is a
+   habit, not a gate). A signature would add key management for no extra security here.
+6. **rot13 added to the scrubber (F1 fix): enumerated transform, not general detection.**
+   rot13 is the canonical `tr` dodge and is cheap to enumerate (plus rot13-of-reversed).
+   Arbitrary-transform detection is not attempted — the interpreter refusal is the control;
+   the scrubber remains a seatbelt with a longer list.
+7. **Real Home on the Air is `~/agent-home`, a local git repo.** Seeded with AGENTS.md
+   (who Tyler is), obsidian + github skills, and the handoff evidence note. Not pushed
+   anywhere yet; remote/sync story is Sprint 6.

@@ -53,3 +53,18 @@ test("encodedForms never includes tiny fragments", () => {
   for (const x of [...f.exact, ...f.caseless]) assert.ok(x.length >= 4);
   assert.ok(new Scrubber(["abcd"]).scrub("xabcdx").text.includes(REDACTED));
 });
+
+test("scrubs rot13 (the tr 'A-Za-z' 'N-ZA-Mn-za-m' leak) and rot13-of-reversed", () => {
+  const rot13 = (s: string) => s.replace(/[a-zA-Z]/g, (c) => {
+    const b = c.charCodeAt(0);
+    const base = b <= 90 ? 65 : 97;
+    return String.fromCharCode(((b - base + 13) % 26) + base);
+  });
+  const s = new Scrubber([V]);
+  assert.equal(s.scrub(rot13(V)).redactions, 1);
+  assert.equal(s.scrub(rot13([...V].reverse().join(""))).redactions, 1);
+  assert.ok(s.scrub(rot13(V)).text.includes(REDACTED));
+  // a rot13 transform of something else is not redacted
+  const t = rot13("totally unrelated text here");
+  assert.deepEqual(s.scrub(t), { text: t, redactions: 0 });
+});

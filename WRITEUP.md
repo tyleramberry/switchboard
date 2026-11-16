@@ -40,17 +40,22 @@ harness to Home.
   comes from Node itself, keychain from `/usr/bin/security`, diffs from `/usr/bin/diff`,
   tests from `node:test`.
 
-## What failed (red team: 8 of 10 pass, 2 honest findings)
+## What failed (red team: 9 of 10 pass after fixes, 1 honest finding)
 
-Full log with real output: `redteam/RESULTS.md`.
+Full log with real output: `redteam/RESULTS.md` (re-run 2026-11-16 on the Air).
 
-- **F1 — unknown encodings.** If you allowlist an interpreter (opt-in flag), the secret can
-  leave in any transform the scrubber doesn't know; rot13 was demonstrated. The default
-  profile refuses interpreters, which blocks the whole class. Lesson: the allowlist is the
-  control; scrubbing is a seatbelt.
+- **F1 — unknown encodings — FIXED 2026-11-16.** The scrubber now covers rot13 and
+  rot13-of-reversed, so the demonstrated leak is gone (attack 3 passes). The deeper lesson
+  stands: if you allowlist an interpreter (opt-in flag), the secret can leave in any
+  transform the scrubber doesn't know. The default profile refuses interpreters, which
+  blocks the whole class; the allowlist is the control, scrubbing is a seatbelt.
+- **F3 — manifest tampering — FIXED 2026-11-16.** `switchboard pin` records a sha256 of
+  the manifest next to it (inside Home's git); every tool call verifies the pin and fails
+  closed if the manifest changed. Attack 5 now includes the tamper probe: an agent that
+  widens its own allowlist gets nothing. Unpinned Homes work but warn.
 - **F2 — the Keychain is not a boundary.** Items created through `/usr/bin/security` have
   an ACL that trusts that binary, so any same-user process (i.e. an agent with a shell tool)
-  can read the value directly, bypassing Switchboard. I could not fix this tonight: a
+  can read the value directly, bypassing Switchboard. I could not fix this: a
   `-T ""` item refuses non-interactive reads entirely (Switchboard itself breaks), and
   trusting the node binary is useless when the agent harness also runs on node. Sprint 6
   needs a signed helper binary with its own ACL, or the 1Password CLI with biometric
@@ -64,25 +69,26 @@ Full log with real output: `redteam/RESULTS.md`.
 - No LLM was in the loop anywhere (a fresh Claude config is not logged in, and I would not
   run a real model unattended without asking). "Agent" in the red team means a scripted,
   fully-obedient tool caller — a stronger attacker in one way (it never refuses), weaker in
-  another (no model judgement at all).
+  another (no model judgement at all). The 2026-11-16 Air run additionally hit
+  `OAuth session expired` on the logged-in personal Claude config, so the live
+  model-driven demo still needs a `claude /login` first.
 - Codex, Grokbot, Buzz installers are written from their docs but UNTESTED (not installed
   on the build machine). Buzz is a documented manual path: its agents run as Claude Code /
   Codex / Goose via buzz-acp.
 - Claude Code native skill discovery is a symlink per skill (re-run setup after adding a
   skill); through MCP `skill_list` new skills appear immediately. The `@import` in
   CLAUDE.md and SOUL.md start-here block were not exercised by a real model session.
-- Migration of existing Hermes/Claude memory was out of scope for the overnight brief;
-  copying real memory needs a reviewed, attended run.
+- Migration of existing memory beyond the starter set (obsidian + github skills, AGENTS.md)
+  still needs an attended, reviewed pass.
 
 ## Sprint 6 should take
 
 1. Keychain ACL problem (F2): signed helper binary, or 1Password CLI backend (the
    `SecretStore` seam is already there — `OnePasswordStore` throws "not implemented").
-2. Manifest integrity: sign the manifest or store a hash so an agent can't widen its own
-   allowlist (F3 in RESULTS.md).
-3. A live end-to-end demo with a real model in Hermes and Claude Code on a clean profile,
+2. A live end-to-end demo with a real model in Hermes and Claude Code on a clean profile,
    plus attended migration of existing memory into Home.
-4. Sync: Home as a private git repo across the mini and the Air, and a `switchboard sync`
+3. Sync: Home as a private git repo across the mini and the Air, and a `switchboard sync`
    or hooks story.
-5. Consider per-call timeouts/allowlist review UX: a `switchboard doctor` that lints
+4. Consider per-call timeouts/allowlist review UX: a `switchboard doctor` that lints
    manifests (unsafe flags, over-broad regexes) would have caught the LAB profile instantly.
+   (Manifest tamper-proofing itself is done — see F3 fix.)

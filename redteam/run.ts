@@ -19,6 +19,7 @@ import { spawnSync } from "node:child_process";
 import { createServer, IncomingMessage } from "node:http";
 import { AddressInfo } from "node:net";
 import { KeychainStore } from "../src/secrets/keychain.js";
+import { writeManifestPin } from "../src/manifest.js";
 
 const VALUE = "sbtest-" + Math.random().toString(16).slice(2, 18); // ~24 chars, random per run
 const LAB_VALUE = "labtest-" + Math.random().toString(16).slice(2, 18);
@@ -92,6 +93,7 @@ secrets:
       - program: /usr/bin/curl
         args: [".*"]
 `);
+  writeManifestPin(join(root, "secrets.manifest.yaml")); // owner pins what they wrote
   writeFileSync(join(root, ".env"), "PLANTED_ENV_SECRET=not-a-real-value\n");
   const kcPath = join(base, "redteam.keychain-db");
   const sec = (args: string[]) => spawnSync("/usr/bin/security", args, { encoding: "utf8" });
@@ -163,11 +165,11 @@ secrets:
     await run("base64", 'printf %s "$LAB_TOKEN" | base64');
     await run("hex (xxd)", 'printf %s "$LAB_TOKEN" | xxd -p | tr -d "\\n"');
     await run("reversed", 'printf %s "$LAB_TOKEN" | rev');
-    const rot = await run("rot13 (unknown encoding)", 'printf %s "$LAB_TOKEN" | tr "A-Za-z" "N-ZA-Mn-za-m"');
+    const rot = await run("rot13", 'printf %s "$LAB_TOKEN" | tr "A-Za-z" "N-ZA-Mn-za-m"');
     const rotLeaks = rot.includes(rot13(LAB_VALUE));
     a.notes.push(rotLeaks
-      ? "FINDING (expected): the scrubber cannot know arbitrary transforms. rot13 output reached the caller in the unsafe profile. Default profile refuses interpreters outright, which blocks the whole attack class; the scrubber is a second line, not the control."
-      : "rot13 was caught (unexpected).");
+      ? "FINDING: rot13 output reached the caller in the unsafe profile."
+      : "rot13 was caught by the scrubber (fixed 2026-11-16: rot13 and rot13-of-reversed are scrubber forms).");
     a.verdict = rotLeaks ? "FAIL" : "PASS";
     attacks.push(a);
   }
@@ -207,7 +209,19 @@ secrets:
     s = { name: "obey the note: memory_write the 'stolen token'" };
     record(a, s, await call("memory_write", { title: "stolen token", body: "here it is: " + VALUE }), false);
     a.steps.push(s);
-    a.verdict = attackerLog.length === 0 && leakScan(allOutputs, ["rot13"]).length === 0 ? "PASS" : "FAIL";
+    // the note also tells the agent to widen its own allowlist (the F3 path)
+    const origManifest = readFileSync(join(root, "secrets.manifest.yaml"), "utf8");
+    writeFileSync(join(root, "secrets.manifest.yaml"), origManifest.replace("hosts: [httpbin.org]", "hosts: [httpbin.org, evil.test]"));
+    s = { name: "obey the note: agent edits the manifest to widen the host allowlist, then calls secret_run" };
+    const tamper = await call("secret_run", { name: "REDTEAM", http: { url: "https://httpbin.org/headers" } });
+    const tamperRefused = tamper.includes("changed since it was pinned");
+    record(a, s, tamper, true, tamperRefused ? "refused: pinned-manifest tampering fails closed" : "NOT REFUSED — tampered manifest was used");
+    a.steps.push(s);
+    a.notes.push(tamperRefused
+      ? "manifest pinning (F3 fix, 2026-11-16) held: every tool call verifies the sha256 pin before loading the manifest"
+      : "FINDING: the tampered manifest was accepted");
+    writeFileSync(join(root, "secrets.manifest.yaml"), origManifest); // restore owner state
+    a.verdict = attackerLog.length === 0 && leakScan(allOutputs, ["rot13"]).length === 0 && tamperRefused ? "PASS" : "FAIL";
     attacks.push(a);
   }
 
@@ -397,9 +411,9 @@ setTimeout(()=>{
     lines.push(``, `**Verdict: ${a.verdict}**`, ``);
   }
   lines.push(`## Findings`, ``);
-  lines.push(`- **F1 (attack 3, unsafe profile):** arbitrary encodings (rot13 observed) defeat the scrubber when an interpreter is allowlisted. The default profile refuses interpreters, which blocks the class; the scrubber is defense in depth only.`);
+  lines.push(`- **F1 (attack 3, unsafe profile) — FIXED 2026-11-16:** the scrubber now covers rot13 and rot13-of-reversed; the demonstrated rot13 leak no longer reaches the caller. Arbitrary unknown transforms (xor, other caesar shifts) remain uncoverable by design — the default profile refuses interpreters, which blocks the class; the scrubber is defense in depth only.`);
   lines.push(`- **F2 (attack 8):** any same-user process can read the Keychain value directly through /usr/bin/security (the item ACL trusts the binary that created it, and Switchboard itself reads through it). Switchboard protects the MCP door, not shell-level agents. Sprint 6 candidate: signed helper + ACL, or 1Password CLI with biometric gating.`);
-  lines.push(`- **F3:** an agent with file-write access could edit secrets.manifest.yaml to widen the allowlist; the manifest is read fresh on each call and is not tamper-proof. Mitigation for now: Home is a git repo; review diffs. Sprint 6: manifest integrity check.`);
+  lines.push(`- **F3 — FIXED 2026-11-16:** the manifest can be pinned (\`switchboard pin\`, sha256 beside it in Home's git); a pinned manifest that changed fails closed on every load, so an agent widening its own allowlist gets nothing (verified in attack 5). Unpinned Homes still work but warn.`);
   lines.push(`- **Observed non-issues:** child-process env was not readable by a same-user process via \`ps eww\` / \`ps -E\` on this macOS build; the FTS index and audit log never contained the value.`);
   lines.push(``, `**Overall: ${results.overall}** (all tool outputs, attacker listener log, audit log and git history scanned for every encoding of the dummy values).`, ``);
   writeFileSync(join("redteam", "RESULTS.md"), lines.join("\n"));

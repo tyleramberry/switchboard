@@ -1,6 +1,6 @@
-import { readFileSync } from "node:fs";
+import { readFileSync, existsSync } from "node:fs";
 import { resolveHome, initHome, homePaths } from "./home.js";
-import { loadManifest } from "./manifest.js";
+import { loadManifest, writeManifestPin } from "./manifest.js";
 import { createStore } from "./secrets/index.js";
 import { serveStdio, Switchboard, VERSION } from "./server.js";
 import { HARNESSES, runSetup } from "./installers/index.js";
@@ -17,6 +17,7 @@ Usage:
   switchboard secret list                  names, purposes, present?  (never values)
   switchboard secret set <NAME>            store a value read from stdin into the Keychain
   switchboard secret delete <NAME>
+  switchboard pin                          pin the secrets manifest (sha256); tampering then fails closed
   switchboard search <query>               memory_search from the terminal
 `;
 
@@ -60,6 +61,13 @@ export async function main(argv: string[]): Promise<number> {
         const harness = args.shift();
         if (!harness) throw new Error("setup needs a harness name");
         return await runSetup(harness, { root, configDir, dryRun, log: (s) => console.log(s) });
+      }
+      case "pin": {
+        const p = homePaths(root).manifest;
+        if (!existsSync(p)) throw new Error(`no manifest at ${p}; run \`switchboard init\` first`);
+        const digest = writeManifestPin(p);
+        console.log(`pinned ${p}\nsha256 ${digest}\n(manifest tampering now fails closed; re-run \`switchboard pin\` after an intentional edit)`);
+        return 0;
       }
       case "secret": {
         const sub = args.shift();

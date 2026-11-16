@@ -1,5 +1,6 @@
-import { readFileSync, existsSync } from "node:fs";
+import { readFileSync, writeFileSync, existsSync } from "node:fs";
 import { basename, isAbsolute } from "node:path";
+import { createHash } from "node:crypto";
 import YAML from "yaml";
 
 export interface CommandRule {
@@ -105,7 +106,59 @@ export function parseManifest(text: string): Manifest {
   return { version: Number(doc.version ?? 1), secrets, warnings };
 }
 
-export function loadManifest(path: string): Manifest {
+export function loadManifest(path: string, opts: { verifyPin?: boolean } = {}): Manifest {
   if (!existsSync(path)) return { version: 1, secrets: [], warnings: [] };
-  return parseManifest(readFileSync(path, "utf8"));
+  let pinWarning: string | undefined;
+  if (opts.verifyPin !== false) pinWarning = verifyManifestPin(path);
+  const m = parseManifest(readFileSync(path, "utf8"));
+  if (pinWarning) m.warnings.push(pinWarning);
+  return m;
+}
+
+// ---------------------------------------------------------------------------
+// Manifest pinning (fix for red-team finding F3): an agent with file-write
+// access could edit secrets.manifest.yaml to widen its own allowlist. The
+// owner pins the manifest (`switchboard pin`); every load then fails closed if
+// the file changed. The pin lives next to the manifest inside Home, so it is
+// covered by Home's git history: editing OR deleting it shows in the diff.
+// ---------------------------------------------------------------------------
+
+/** Path of the pin file for a manifest. */
+export function pinPathFor(manifestPath: string): string {
+  return /\.ya?ml$/.test(manifestPath)
+    ? manifestPath.replace(/\.ya?ml$/, ".sha256")
+    : manifestPath + ".sha256";
+}
+
+/** SHA-256 of the manifest bytes. */
+export function manifestDigest(manifestPath: string): string {
+  return createHash("sha256").update(readFileSync(manifestPath)).digest("hex");
+}
+
+/** Owner action: record the current manifest as trusted. */
+export function writeManifestPin(manifestPath: string): string {
+  const digest = manifestDigest(manifestPath);
+  writeFileSync(pinPathFor(manifestPath), digest + "\n");
+  return digest;
+}
+
+/**
+ * Fail closed when a pinned manifest changed. Returns a warning string when the
+ * manifest was never pinned (still works, but nudges the owner to pin it).
+ */
+export function verifyManifestPin(manifestPath: string): string | undefined {
+  const pin = pinPathFor(manifestPath);
+  if (!existsSync(pin)) {
+    return "manifest is not pinned; run `switchboard pin` to lock it against tampering";
+  }
+  const expected = readFileSync(pin, "utf8").trim();
+  const actual = manifestDigest(manifestPath);
+  if (expected !== actual) {
+    throw new ManifestError(
+      `secrets manifest changed since it was pinned (pinned sha256 ${expected}, found ${actual}). ` +
+      `If you changed it on purpose, review the git diff, then run \`switchboard pin\` again. ` +
+      `Refusing to load a manifest that may have been edited by an agent.`,
+    );
+  }
+  return undefined;
 }

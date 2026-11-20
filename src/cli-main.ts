@@ -118,7 +118,7 @@ export async function main(argv: string[]): Promise<number> {
         const portArg = flag(args, "--port");
         const port = portArg === undefined ? 7337 : Number(portArg);
         if (!Number.isInteger(port) || port < 0 || port > 65535) throw new Error("--port must be an integer 0-65535");
-        initHome(root);
+        if (!existsSync(homePaths(root).agents)) throw new Error(`Home not initialised at ${root}; run \`switchboard init\` first`);
         const { startUi } = await import("./ui/server.js");
         const ui = await startUi({ root, port });
         console.log(`Switchboard UI for ${root}`);

@@ -1,0 +1,63 @@
+<!doctype html>
+<html lang="en" data-theme="light">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="referrer" content="no-referrer">
+  <title>Switchboard</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Geist:wght@400;500;600&family=Geist+Mono:wght@400;500&display=swap">
+  <link rel="stylesheet" href="/styles.css">
+  <script src="/theme.js"></script>
+</head>
+<body>
+  <div class="shell">
+    <aside class="sidebar">
+      <div class="brand">
+        <span class="brand-mark" aria-hidden="true"></span>
+        <span class="brand-name">Switchboard</span>
+      </div>
+      <button class="search-trigger" id="open-palette" type="button">
+        <span class="icon" data-icon="search"></span>
+        <span>Jump to</span>
+        <kbd>&#8984;K</kbd>
+      </button>
+      <nav class="nav" id="nav"></nav>
+      <div class="sidebar-foot">
+        <div class="home-path mono" id="home-path"></div>
+        <button class="ghost-btn" id="theme-toggle" type="button" title="Toggle dark mode">
+          <span class="icon" data-icon="moon"></span><span id="theme-label">Dark</span>
+        </button>
+      </div>
+    </aside>
+    <main class="main">
+      <header class="topbar">
+        <h1 id="page-title">Dashboard</h1>
+        <div class="topbar-actions" id="topbar-actions"></div>
+      </header>
+      <section class="content" id="view"></section>
+    </main>
+  </div>
+
+  <div class="palette-backdrop" id="palette" hidden>
+    <div class="palette" role="dialog" aria-label="Command palette">
+      <div class="palette-input">
+        <span class="icon" data-icon="search"></span>
+        <input id="palette-input" placeholder="Jump to a section or note" autocomplete="off" spellcheck="false">
+      </div>
+      <ul class="palette-list" id="palette-list"></ul>
+    </div>
+  </div>
+
+  <div class="modal-backdrop" id="modal" hidden>
+    <div class="modal" role="dialog">
+      <div class="modal-head"><h2 id="modal-title"></h2><button class="icon-btn" id="modal-close" type="button" title="Close"><span class="icon" data-icon="x"></span></button></div>
+      <div class="modal-body" id="modal-body"></div>
+    </div>
+  </div>
+
+  <div class="toast" id="toast" hidden></div>
+  <script src="/app.js"></script>
+</body>
+</html>

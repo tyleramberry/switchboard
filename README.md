@@ -21,7 +21,26 @@ node dist/src/cli.js setup hermes            # apply (backs up what it edits)
 node dist/src/cli.js pin                     # pin the secrets manifest (tamper-proofing)
 node dist/src/cli.js doctor                 # lint the manifest (errors on interpreter + catch-all allowlists)
 node dist/src/cli.js mcp                     # the MCP server (harnesses run this)
+node dist/src/cli.js ui                      # local web UI (opens http://127.0.0.1:7337/?token=...)
 ```
+
+## Web UI
+
+`switchboard ui [--port N] [--no-open]` starts a local control panel over the same modules the
+MCP server uses: dashboard (doctor, pin state, Home git status, needs-attention list), memory
+browser and editor, handoffs, skills library, secrets manager and harness setup.
+
+- Bound to 127.0.0.1 only. Each launch prints a URL with a random token; the page keeps it and
+  sends it as a header on every API call. Requests with another Host or a cross-origin Origin
+  are refused.
+- No screen and no endpoint returns a secret value. Values are write-only (set or rotate);
+  every API response passes through the same scrubber as the MCP tools.
+- Manifest edits are validated by the parser and doctor (errors reject the save), then the
+  manifest is re-pinned. Memory and skill writes go through the memory_write secret scan.
+- Nothing is committed to Home's git repo unless you press Commit changes.
+- Plain HTML, CSS and vanilla JS in `ui/public/`; no framework, no bundler, no new
+  dependencies. Cmd+K opens a palette to jump to sections, notes and skills.
+
 
 ## Layout of Home
 

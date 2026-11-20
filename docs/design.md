@@ -28,6 +28,7 @@ process re-syncs the FTS index from disk before it queries.
 | `src/server.ts` | MCP tool registration; all output passes a final scrub |
 | `src/installers/` | `switchboard setup <harness>` |
 | `src/cli.ts` | CLI entry |
+| `src/ui/server.ts`, `ui/public/` | `switchboard ui`: localhost control panel (token, Host/Origin checks, scrubbed JSON) |
 
 ## Secret handling rules
 

@@ -45,3 +45,17 @@ that unblocked work; all are reversible.
    the ACL follows the code identity, not the path, so an INTACT copy of the helper exec'd
    by a same-user process still returns the value — same-user arbitrary code stays out of
    scope until the 1Password backend.
+
+## 2026-11-19 (UI v1, unattended mini session)
+
+9. **Web UI is a localhost node:http server with vanilla JS, no new dependencies.** It reuses
+   the Switchboard class, memory, skills, manifest, doctor and installers, so the UI and MCP
+   cannot drift. Guards: bind 127.0.0.1, random per-launch token in a header (not a cookie, so
+   CSRF needs the token), Host allowlist against DNS rebinding, cross-origin Origin refused,
+   strict CSP with `script-src 'self'`. Every JSON response is scrubbed; if a scrubber cannot be
+   built the response fails closed. Values are write-only, there is no reveal path.
+   Manifest saves from the UI are re-pinned (the owner is the one clicking), but the UI
+   refuses to edit a manifest whose pin no longer matches: re-pinning would silently bless an
+   out-of-band edit. The form cannot turn on `unsafe_allow_interpreter`. Home git commits only
+   happen through the explicit Commit changes button. The activity log (plan section 7) is
+   deferred.

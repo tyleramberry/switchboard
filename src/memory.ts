@@ -1,6 +1,6 @@
 import { DatabaseSync } from "node:sqlite";
 import {
-  existsSync, mkdirSync, readdirSync, readFileSync, statSync, writeFileSync, realpathSync, lstatSync,
+  existsSync, mkdirSync, readdirSync, readFileSync, statSync, writeFileSync, realpathSync, lstatSync, unlinkSync,
 } from "node:fs";
 import { join, relative, resolve, sep, isAbsolute } from "node:path";
 import { randomBytes } from "node:crypto";
@@ -14,6 +14,8 @@ export interface MemoryNote {
   tags: string[];
   date: string;
   body: string;
+  /** Which harness wrote it (frontmatter `source`), when recorded. */
+  source?: string;
 }
 
 export class PathError extends Error {}
@@ -43,6 +45,7 @@ function toNote(rel: string, text: string): MemoryNote {
     tags,
     date: meta.date instanceof Date ? meta.date.toISOString().slice(0, 10) : String(meta.date ?? ""),
     body,
+    ...(meta.source ? { source: String(meta.source) } : {}),
   };
 }
 
@@ -180,6 +183,43 @@ export class MemoryStore {
     writeFileSync(join(this.memDir, rel), text, { flag: "wx", mode: 0o644 });
     this.sync();
     return { path: rel };
+  }
+
+  /** Every note (frontmatter + body), newest date first. Used by the web UI. */
+  list(): MemoryNote[] {
+    const real = realpathSync(this.memDir);
+    return walkMd(this.memDir, this.memDir)
+      .map((rel) => toNote(rel, readFileSync(join(real, rel), "utf8")))
+      .sort((a, b) => (b.date || "").localeCompare(a.date || "") || a.path.localeCompare(b.path));
+  }
+
+  /**
+   * Rewrite an existing note in place (same path). Frontmatter keys this method does not
+   * manage (e.g. custom fields) are preserved; `date` is kept, `updated` is set to today.
+   */
+  update(rel: string, input: { title: string; body: string; type?: string; tags?: string[]; source?: string }): { path: string } {
+    const real = containedPath(this.memDir, rel);
+    if (!lstatSync(real).isFile() || !real.endsWith(".md")) throw new PathError("only existing .md notes can be updated");
+    const { meta } = splitFrontmatter(readFileSync(real, "utf8"));
+    const next: Record<string, unknown> = { ...meta, title: input.title, type: input.type ?? meta.type ?? "note", tags: input.tags ?? [] };
+    if (meta.date instanceof Date) next.date = meta.date.toISOString().slice(0, 10);
+    if (!next.date) next.date = new Date().toISOString().slice(0, 10);
+    if (input.source !== undefined) {
+      if (input.source) next.source = input.source;
+      else delete next.source;
+    }
+    next.updated = new Date().toISOString().slice(0, 10);
+    writeFileSync(real, `---\n${YAML.stringify(next).trimEnd()}\n---\n\n${input.body.trimEnd()}\n`);
+    this.sync();
+    return { path: relative(realpathSync(this.memDir), real) };
+  }
+
+  /** Delete one note. Home is a git repo, so this is recoverable until committed. */
+  remove(rel: string): void {
+    const real = containedPath(this.memDir, rel);
+    if (!lstatSync(real).isFile() || !real.endsWith(".md")) throw new PathError("only .md notes can be deleted");
+    unlinkSync(real);
+    this.sync();
   }
 
   read(rel: string): MemoryNote {

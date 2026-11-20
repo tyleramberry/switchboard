@@ -1,4 +1,4 @@
-import { existsSync, readdirSync, readFileSync, lstatSync, realpathSync } from "node:fs";
+import { existsSync, readdirSync, readFileSync, lstatSync, realpathSync, writeFileSync, mkdirSync } from "node:fs";
 import { join, relative } from "node:path";
 import { homePaths } from "./home.js";
 import { containedPath, splitFrontmatter, PathError } from "./memory.js";
@@ -9,7 +9,7 @@ export interface SkillInfo {
   files: string[];
 }
 
-const SKILL_NAME = /^[a-z0-9][a-z0-9._-]{0,63}$/;
+export const SKILL_NAME = /^[a-z0-9][a-z0-9._-]{0,63}$/;
 
 function listFiles(dir: string, base: string, out: string[] = []): string[] {
   for (const e of readdirSync(dir, { withFileTypes: true })) {
@@ -51,5 +51,24 @@ export class SkillStore {
     const real = containedPath(skillDir, file);
     if (!lstatSync(real).isFile()) throw new PathError("not a file");
     return { name, file: relative(realpathSync(skillDir), real), content: readFileSync(real, "utf8") };
+  }
+
+  /** Overwrite an existing file inside a skill folder (UI editor). */
+  put(name: string, file: string, content: string): { name: string; file: string } {
+    const cur = this.get(name, file); // validates name, containment, existence
+    writeFileSync(join(realpathSync(join(this.dir, name)), cur.file), content);
+    return { name, file: cur.file };
+  }
+
+  /** Create a new skill folder with a SKILL.md. Refuses if it already exists. */
+  create(name: string, description: string, body?: string): { name: string; file: string } {
+    if (!SKILL_NAME.test(name)) throw new PathError("skill name must be lowercase letters, digits, . _ - (max 64)");
+    const dir = join(this.dir, name);
+    if (existsSync(dir)) throw new PathError(`skill ${name} already exists`);
+    mkdirSync(dir, { recursive: true });
+    const desc = description.replace(/\r?\n/g, " ").trim();
+    const text = `---\nname: ${name}\ndescription: ${JSON.stringify(desc)}\n---\n\n${(body ?? `# ${name}\n\n1. Step one.\n2. Step two.\n`).trimEnd()}\n`;
+    writeFileSync(join(dir, "SKILL.md"), text, { flag: "wx", mode: 0o644 });
+    return { name, file: "SKILL.md" };
   }
 }

@@ -1,7 +1,8 @@
+import { spawn } from "node:child_process";
 import { readFileSync, existsSync } from "node:fs";
 import { resolveHome, initHome, homePaths } from "./home.js";
-import { loadManifest, writeManifestPin, ManifestError } from "./manifest.js";
-import { lintManifest, formatFindings, DoctorFinding } from "./doctor.js";
+import { loadManifest, writeManifestPin } from "./manifest.js";
+import { runDoctor, formatFindings, DoctorFinding } from "./doctor.js";
 import { createStore } from "./secrets/index.js";
 import { serveStdio, Switchboard, VERSION } from "./server.js";
 import { HARNESSES, runSetup } from "./installers/index.js";
@@ -21,6 +22,7 @@ Usage:
   switchboard pin                          pin the secrets manifest (sha256); tampering then fails closed
   switchboard doctor                       lint the secrets manifest (over-broad allowlists, interpreters, pin state)
   switchboard search <query>               memory_search from the terminal
+  switchboard ui [--port N] [--no-open]    local web UI on 127.0.0.1 (default port 7337)
 `;
 
 function flag(args: string[], name: string): string | undefined {
@@ -66,16 +68,7 @@ export async function main(argv: string[]): Promise<number> {
       }
       case "doctor": {
         const p = homePaths(root).manifest;
-        let findings: DoctorFinding[] = [];
-        try {
-          const m = loadManifest(p);
-          // loadManifest's own warnings (unpinned manifest, unsafe interpreter notes) are health facts too
-          findings = [...lintManifest(m), ...m.warnings.map((w) => ({ severity: "warning" as const, message: w, hint: "" }))];
-        } catch (e) {
-          if (e instanceof ManifestError) {
-            findings = [{ severity: "error", message: `manifest not loadable: ${e.message}`, hint: "fix or re-pin the manifest (`switchboard pin`) before any secret can be used" }];
-          } else throw e;
-        }
+        const findings: DoctorFinding[] = runDoctor(p);
         console.log(`switchboard doctor — ${p}`);
         const lines = formatFindings(findings);
         if (lines.length) console.log(lines.join("\n").trimStart());
@@ -119,6 +112,24 @@ export async function main(argv: string[]): Promise<number> {
           return 0;
         }
         throw new Error("secret: use list | set <NAME> | delete <NAME>");
+      }
+      case "ui": {
+        const noOpen = bool(args, "--no-open");
+        const portArg = flag(args, "--port");
+        const port = portArg === undefined ? 7337 : Number(portArg);
+        if (!Number.isInteger(port) || port < 0 || port > 65535) throw new Error("--port must be an integer 0-65535");
+        initHome(root);
+        const { startUi } = await import("./ui/server.js");
+        const ui = await startUi({ root, port });
+        console.log(`Switchboard UI for ${root}`);
+        console.log(`  ${ui.url}`);
+        console.log("Bound to 127.0.0.1 only. The token in the URL is per launch. Ctrl-C to stop.");
+        if (!noOpen) spawn("/usr/bin/open", [ui.url], { stdio: "ignore", detached: true }).unref();
+        return await new Promise<number>((done) => {
+          const stop = () => ui.close().then(() => done(0));
+          process.once("SIGINT", stop);
+          process.once("SIGTERM", stop);
+        });
       }
       case "search": {
         const sb = new Switchboard({ root });

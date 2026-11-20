@@ -6,7 +6,7 @@
  * ERROR-level before an agent ever runs it. Doctor never reads secret values; it
  * only looks at names, programs, regexes, hosts and pin state.
  */
-import { Manifest, SecretSpec } from "./manifest.js";
+import { Manifest, SecretSpec, loadManifest, ManifestError } from "./manifest.js";
 
 export type Severity = "error" | "warning" | "info";
 
@@ -87,6 +87,23 @@ export function lintManifest(m: Manifest): DoctorFinding[] {
     out.push({ severity: "info", message: "no secrets declared", hint: "add entries to secrets.manifest.yaml, then `switchboard pin`" });
   }
   return out;
+}
+
+/**
+ * Full doctor run over a manifest path: lint findings plus loadManifest's own warnings, or a
+ * single error when the manifest cannot be loaded (bad YAML, tampered pin). Shared by the CLI
+ * and the web UI so both report the same thing.
+ */
+export function runDoctor(manifestPath: string): DoctorFinding[] {
+  try {
+    const m = loadManifest(manifestPath);
+    return [...lintManifest(m), ...m.warnings.map((w) => ({ severity: "warning" as const, message: w, hint: "" }))];
+  } catch (e) {
+    if (e instanceof ManifestError) {
+      return [{ severity: "error", message: `manifest not loadable: ${e.message}`, hint: "fix or re-pin the manifest (`switchboard pin`) before any secret can be used" }];
+    }
+    throw e;
+  }
 }
 
 const ORDER: Record<Severity, number> = { error: 0, warning: 1, info: 2 };

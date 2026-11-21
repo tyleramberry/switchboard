@@ -148,7 +148,7 @@ label.field { display: flex; flex-direction: column; gap: 5px; font-size: 12px; 
 .faint { color: var(--text-3); }
 .small { font-size: 12px; }
 
-.stats { display: grid; grid-template-columns: repeat(5, minmax(0, 1fr)); border: 1px solid var(--border); border-radius: var(--radius); background: var(--surface); }
+.stats { display: grid; grid-template-columns: repeat(6, minmax(0, 1fr)); border: 1px solid var(--border); border-radius: var(--radius); background: var(--surface); }
 .stat { padding: 14px 16px; border-right: 1px solid var(--border); text-decoration: none; }
 .stat:last-child { border-right: 0; }
 .stat:hover { background: var(--surface-2); }
@@ -254,6 +254,49 @@ table.tbl { width: 100%; border-collapse: collapse; }
 .seg button + button { border-left: 1px solid var(--border); }
 .seg button.on { background: var(--surface-2); color: var(--text); }
 .check { display: inline-flex; color: var(--ok); } .cross { display: inline-flex; color: var(--text-3); }
+
+/* ---------- inbox: single-card focus mode ---------- */
+.ib { max-width: 720px; margin: 0 auto; display: flex; flex-direction: column; gap: 12px; }
+.ib-nav { display: flex; align-items: center; justify-content: center; gap: 10px; }
+.ib-nav .icon-btn { font-size: 18px; line-height: 1; width: 28px; justify-content: center; }
+.ib-card { padding: 22px 24px 18px; display: flex; flex-direction: column; gap: 14px; }
+.ib-meta { display: flex; flex-wrap: wrap; align-items: center; gap: 6px; }
+.ib-title { margin: 0; font-size: 19px; font-weight: 600; letter-spacing: -0.015em; line-height: 1.3; }
+.ib-summary { margin: 0; font-size: 14px; line-height: 1.6; color: var(--text-2); white-space: pre-wrap; overflow-wrap: anywhere; }
+.ib-arts { display: grid; grid-template-columns: repeat(auto-fit, minmax(180px, 1fr)); gap: 10px; }
+.ib-arts figure { margin: 0; border: 1px solid var(--border); border-radius: 6px; overflow: hidden; background: var(--surface-2); }
+.ib-arts img { display: block; width: 100%; max-height: 320px; object-fit: contain; min-height: 60px; }
+.ib-arts figcaption { font-size: 12px; color: var(--text-3); padding: 5px 8px; border-top: 1px solid var(--border); }
+.ib-opts { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; }
+.ib-opt {
+  display: flex; align-items: center; gap: 10px; min-height: 44px; padding: 8px 12px; text-align: left;
+  border: 1px solid var(--border); border-radius: 8px; background: var(--surface); cursor: pointer; font-weight: 500;
+}
+.ib-opt:hover { border-color: var(--border-strong); background: var(--surface-2); }
+.ib-opt.rec { border-color: var(--accent); box-shadow: inset 0 0 0 1px var(--accent); }
+.ib-opt kbd { flex: none; }
+.ib-feedback { display: flex; gap: 6px; align-items: flex-start; }
+.ib-feedback textarea { min-height: 52px; resize: vertical; }
+.ib-feedback .icon-btn { margin-top: 6px; }
+.ib-feedback .icon-btn.live { color: var(--danger); background: color-mix(in srgb, var(--danger) 10%, transparent); }
+.ib-actions { display: flex; flex-wrap: wrap; gap: 6px; }
+.ib-actions .btn kbd { margin-left: 2px; }
+.ib-actions .btn.on { color: var(--accent); border-color: var(--accent); background: var(--accent-soft); }
+.ib-keys { display: flex; flex-wrap: wrap; justify-content: center; gap: 14px; }
+.ib-empty { padding: 48px 24px; text-align: center; }
+.ib-empty h2 { margin: 10px 0 4px; font-size: 17px; font-weight: 600; }
+.ib-empty p { margin: 4px 0; }
+.ib-empty-mark { display: inline-flex; padding: 10px; border-radius: 50%; color: var(--ok); background: color-mix(in srgb, var(--ok) 10%, transparent); }
+.ib-embed-tabs { align-self: center; }
+
+/* ?embed=inbox: frameless, fits the Hermes Desktop preview pane */
+html.embed .shell { display: block; height: auto; min-height: 100vh; }
+html.embed .sidebar, html.embed .topbar { display: none; }
+html.embed .main { overflow: visible; }
+html.embed .content { padding: 14px 14px 24px; overflow: visible; }
+html.embed .ib { max-width: none; }
+html.embed .ib-card { padding: 16px 16px 14px; }
+@media (max-width: 520px) { .ib-opts { grid-template-columns: 1fr; } }
 
 @media (max-width: 900px) {
   .shell { grid-template-columns: 1fr; }

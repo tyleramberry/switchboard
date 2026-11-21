@@ -8,6 +8,8 @@
  * - no endpoint returns a secret value. Values are write-only (set/rotate) and every JSON
  *   response passes through the scrubber built from every stored value.
  * - Home git commits happen only through POST /api/commit (the "Commit changes" button).
+ * - inbox artifacts are served only for names listed on the card, from inside
+ *   .switchboard/inbox-artifacts/<id>/, and only after a scrub check of the raw bytes.
  */
 import { createServer, IncomingMessage, ServerResponse } from "node:http";
 import { randomBytes, timingSafeEqual } from "node:crypto";
@@ -24,6 +26,7 @@ import { runDoctor, lintManifest, DoctorFinding } from "../doctor.js";
 import { HARNESSES } from "../installers/index.js";
 import { unifiedDiff, applyPlan, Plan } from "../installers/common.js";
 import { PathError } from "../memory.js";
+import { InboxError, InboxView, ARTIFACT_MIME } from "../inbox.js";
 import { SKILL_NAME } from "../skills.js";
 import { PolicyError } from "../secret-run.js";
 import { TOKEN_PATTERNS, REDACTED, Scrubber } from "../scrub.js";
@@ -65,7 +68,7 @@ const CSP = [
   "script-src 'self'",
   "style-src 'self' https://fonts.googleapis.com",
   "font-src https://fonts.gstatic.com",
-  "img-src 'self' data:",
+  "img-src 'self' data: blob:",
   "connect-src 'self'",
   "base-uri 'none'",
   "form-action 'none'",
@@ -202,7 +205,10 @@ export class UiApi {
       if (h.state === "out of sync") attention.push({ kind: "harness", message: `${h.label} is out of sync with Home`, target: h.id });
     }
     if (secretsError) attention.push({ kind: "manifest", message: `Manifest not loadable: ${secretsError}` });
+    const inbox = this.sb.inbox.counts();
+    if (inbox.open) attention.unshift({ kind: "inbox", message: `${inbox.open} decision${inbox.open === 1 ? "" : "s"} waiting in the Inbox` });
     return {
+      inboxOpenCount: inbox.open,
       home: p.root,
       doctor: findings,
       pin: pinState(p.manifest),
@@ -213,9 +219,28 @@ export class UiApi {
         skills: skills.length,
         secrets: secrets.length,
         harnesses: harnesses.filter((h) => h.state === "installed").length,
+        inbox: inbox.open,
       },
       attention,
     };
+  }
+
+  // ---------------- inbox ----------------
+  inboxList(view: string, harness?: string) {
+    const v = (view || "open") as InboxView;
+    if (!["open", "snoozed", "resolved"].includes(v)) throw new HttpError(400, "view must be open, snoozed or resolved");
+    const pruned = this.sb.inbox.prune(30).removed;
+    return { view: v, pruned, counts: this.sb.inbox.counts(), cards: this.sb.inbox.list(v, { harness }) };
+  }
+
+  async inboxDecide(id: string, b: any) {
+    const decision = typeof b?.decision === "string" || typeof b?.decision === "number" ? String(b.decision) : "";
+    const feedback = b?.feedback === undefined || b?.feedback === null ? undefined : String(b.feedback);
+    return this.sb.inboxDecide(id, { decision, feedback, saveRule: b?.save_rule === true, source: "switchboard-ui" });
+  }
+
+  inboxSnooze(id: string, b: any) {
+    return this.sb.inbox.snooze(id, String(b?.until ?? ""));
   }
 
   // ---------------- memory ----------------
@@ -572,6 +597,23 @@ export async function startUi(opts: UiOptions): Promise<UiHandle> {
     res.end(text);
   };
 
+  /** Raw image bytes, never JSON. Refused if the bytes contain any encoding of a stored value. */
+  const sendArtifact = async (res: ServerResponse, id: string, file: string) => {
+    const real = api.sb.inbox.artifactPath(id, file);
+    const bytes = readFileSync(real);
+    const sc = await scrubberSafe();
+    if (!sc) throw new HttpError(500, "could not load secrets to check the artifact; check secrets.manifest.yaml");
+    if (sc.contains(bytes.toString("latin1"))) throw new HttpError(422, "refused: artifact contains a stored secret value");
+    res.writeHead(200, {
+      "content-type": ARTIFACT_MIME[extname(real).toLowerCase()] ?? "application/octet-stream",
+      "content-length": bytes.length,
+      "cache-control": "no-store",
+      "x-content-type-options": "nosniff",
+      "content-security-policy": "default-src 'none'; sandbox",
+    });
+    res.end(bytes);
+  };
+
   const route = async (req: IncomingMessage, url: URL): Promise<[number, unknown]> => {
     const m = req.method ?? "GET";
     const path = url.pathname;
@@ -582,6 +624,12 @@ export async function startUi(opts: UiOptions): Promise<UiHandle> {
     if (is("GET", "/api/dashboard")) return [200, await api.dashboard()];
     if (is("GET", "/api/git")) return [200, gitStatus(api.sb.paths.root)];
     if (is("POST", "/api/commit")) return [200, api.commit((await readJson(req)).message)];
+
+    if (is("GET", "/api/inbox")) return [200, api.inboxList(q("view"), q("harness") || undefined)];
+    if (seg[1] === "inbox" && seg.length === 4 && m === "POST") {
+      if (seg[3] === "decide") return [200, await api.inboxDecide(seg[2], await readJson(req))];
+      if (seg[3] === "snooze") return [200, api.inboxSnooze(seg[2], await readJson(req))];
+    }
 
     if (is("GET", "/api/memory")) return [200, api.memoryList(q("q"), q("type") || undefined, q("tag") || undefined)];
     if (is("POST", "/api/memory")) return [201, await api.memoryCreate(await readJson(req))];
@@ -648,10 +696,21 @@ export async function startUi(opts: UiOptions): Promise<UiHandle> {
           return await send(res, 401, { error: "missing or bad token; open the URL printed by `switchboard ui`" });
         }
         try {
+          const seg = url.pathname.split("/").filter(Boolean);
+          if (req.method === "GET" && seg[1] === "inbox" && seg[2] === "artifact") {
+            if (seg.length !== 5) throw new PathError("invalid artifact path");
+            return await sendArtifact(res, decodeURIComponent(seg[3]), decodeURIComponent(seg[4]));
+          }
           const [status, body] = await route(req, url);
           return await send(res, status, body);
         } catch (e) {
-          const status = e instanceof HttpError ? e.status : e instanceof PathError ? 400 : e instanceof PolicyError ? 422 : e instanceof ManifestError ? 422 : 500;
+          const status =
+            e instanceof HttpError ? e.status
+            : e instanceof PathError ? 400
+            : e instanceof InboxError ? ({ invalid: 400, not_found: 404, conflict: 409 } as const)[e.code]
+            : e instanceof PolicyError ? 422
+            : e instanceof ManifestError ? 422
+            : 500;
           return await send(res, status, { error: (e as Error).message });
         }
       }

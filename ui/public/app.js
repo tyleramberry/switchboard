@@ -5,10 +5,13 @@
   // ---------- token: taken from ?token= once, kept in sessionStorage, removed from the URL ----------
   var params = new URLSearchParams(location.search);
   var TOKEN = params.get("token") || sessionStorage.getItem("sb-token") || "";
+  // ?embed=inbox: frameless Inbox only, sized for the Hermes Desktop preview pane.
+  var EMBED = params.get("embed") === "inbox";
   if (params.get("token")) {
     sessionStorage.setItem("sb-token", TOKEN);
-    history.replaceState(null, "", location.pathname + location.hash);
+    history.replaceState(null, "", location.pathname + (EMBED ? "?embed=inbox" : "") + location.hash);
   }
+  if (EMBED) document.documentElement.classList.add("embed");
 
   // ---------- icons (1.5px stroke) ----------
   var ICONS = {
@@ -32,6 +35,10 @@
     key: '<circle cx="8" cy="15" r="4"/><path d="M11 12l9-9M17 6l3 3M14 9l2 2"/>',
     alert: '<path d="M12 4l9 16H3z"/><path d="M12 10v4M12 17.5v.01"/>',
     play: '<path d="M7 5l12 7-12 7z"/>',
+    inbox: '<path d="M4 13l2.5-8h11L20 13v6a1 1 0 0 1-1 1H5a1 1 0 0 1-1-1z"/><path d="M4 13h4.5l1 2.5h5l1-2.5H20"/>',
+    mic: '<rect x="9" y="3" width="6" height="11" rx="3"/><path d="M5.5 11a6.5 6.5 0 0 0 13 0M12 17.5V21"/>',
+    clock: '<circle cx="12" cy="12" r="8.5"/><path d="M12 7.5V12l3 2"/>',
+    pin: '<path d="M9 4h6l-1 5 3 3v2H7v-2l3-3z"/><path d="M12 14v6"/>',
   };
   function icon(name) { return '<span class="icon"><svg viewBox="0 0 24 24">' + (ICONS[name] || "") + "</svg></span>"; }
   function hydrateIcons(root) {
@@ -143,6 +150,7 @@
 
   // ---------- nav ----------
   var SECTIONS = [
+    { id: "inbox", label: "Inbox", icon: "inbox" },
     { id: "dashboard", label: "Dashboard", icon: "dashboard" },
     { id: "memory", label: "Memory", icon: "memory" },
     { id: "handoffs", label: "Handoffs", icon: "handoff" },
@@ -164,6 +172,7 @@
     var i = h.indexOf("/");
     var section = i === -1 ? h : h.slice(0, i);
     var arg = i === -1 ? "" : decodeURIComponent(h.slice(i + 1));
+    if (EMBED) section = "inbox";
     if (!SECTIONS.some(function (s) { return s.id === section; })) section = "dashboard";
     return { section: section, arg: arg };
   }
@@ -226,7 +235,7 @@
       gitState = d.git;
       $("#home-path").textContent = d.home;
       $("#home-path").title = d.home;
-      counts = { memory: d.counts.notes, handoffs: d.counts.handoffs, skills: d.counts.skills, secrets: d.counts.secrets };
+      counts = { inbox: d.inboxOpenCount, memory: d.counts.notes, handoffs: d.counts.handoffs, skills: d.counts.skills, secrets: d.counts.secrets };
       renderNav();
       headerWithCommit("Dashboard", '<button class="btn" id="dash-refresh">' + icon("refresh") + "<span>Refresh</span></button>");
       $("#dash-refresh").onclick = render;
@@ -255,7 +264,7 @@
           : '<div class="empty">Working tree clean.</div>';
       view.innerHTML =
         '<div class="stack content-narrow">' +
-        '<div class="stats">' + stat("Notes", d.counts.notes, "#/memory") + stat("Handoffs", d.counts.handoffs, "#/handoffs") +
+        '<div class="stats">' + stat("Inbox", d.inboxOpenCount, "#/inbox") + stat("Notes", d.counts.notes, "#/memory") + stat("Handoffs", d.counts.handoffs, "#/handoffs") +
         stat("Skills", d.counts.skills, "#/skills") + stat("Secrets", d.counts.secrets, "#/secrets") +
         stat("Harnesses wired", d.counts.harnesses, "#/harnesses") + "</div>" +
         '<div class="card"><div class="card-head"><h3>Needs attention</h3><span class="sub">' + d.attention.length + '</span></div><ul class="list" id="attn">' + attention + "</ul></div>" +
@@ -267,7 +276,8 @@
       $$("#attn li[data-kind]").forEach(function (li) {
         li.onclick = function () {
           var k = li.getAttribute("data-kind"), t = li.getAttribute("data-target");
-          if (k === "duplicate") go("memory", t);
+          if (k === "inbox") go("inbox");
+          else if (k === "duplicate") go("memory", t);
           else if (k === "secret" || k === "manifest") go("secrets");
           else if (k === "skill") go("skills", t);
           else if (k === "harness") go("harnesses");
@@ -611,13 +621,188 @@
   function render() {
     renderNav();
     var r = route();
-    var fn = { dashboard: viewDashboard, memory: viewMemory, handoffs: viewHandoffs, skills: viewSkills, secrets: viewSecrets, harnesses: viewHarnesses }[r.section];
+    var fn = { inbox: viewInbox, dashboard: viewDashboard, memory: viewMemory, handoffs: viewHandoffs, skills: viewSkills, secrets: viewSecrets, harnesses: viewHarnesses }[r.section];
     view.scrollTop = 0;
     Promise.resolve(fn(r.arg)).catch(function (e) {
       if (e.status === 401) view.innerHTML = '<div class="card content-narrow"><div class="empty">This page needs the token. Open the URL printed by <span class="mono">switchboard ui</span>.</div></div>';
       else view.innerHTML = '<div class="errbox content-narrow">' + esc(e.message) + "</div>";
     });
   }
+
+  // ---------- inbox (single-card focus mode) ----------
+  // Shortcuts: 1-4 pick that option, a approve (option 1), s snooze 2h, S snooze until tomorrow,
+  // m toggle "save as rule", v dictate feedback, j/k next/previous card, f focus feedback.
+  var ib = { view: "open", cards: [], counts: null, idx: 0, rule: false, busy: false, rec: null, blobs: [] };
+  var PRIO = { p0: "err", p1: "warn", p2: "", p3: "" };
+  function ago(iso) {
+    var s = Math.max(0, (Date.now() - Date.parse(iso)) / 1000);
+    if (s < 90) return "just now";
+    if (s < 5400) return Math.round(s / 60) + "m ago";
+    if (s < 129600) return Math.round(s / 3600) + "h ago";
+    return Math.round(s / 86400) + "d ago";
+  }
+  function inboxActive() { return route().section === "inbox" && !!$("#ib-root"); }
+  function releaseBlobs() { ib.blobs.forEach(function (u) { URL.revokeObjectURL(u); }); ib.blobs = []; }
+  function viewInbox() {
+    setPage("Inbox", '<div class="seg" id="ib-seg"><button data-v="open">Open</button><button data-v="snoozed">Snoozed</button><button data-v="resolved">Resolved</button></div>');
+    $$("#ib-seg button").forEach(function (b) {
+      b.classList.toggle("on", b.getAttribute("data-v") === ib.view);
+      b.onclick = function () { ib.view = b.getAttribute("data-v"); ib.idx = 0; loadInbox(); };
+    });
+    view.innerHTML = '<div id="ib-root" class="ib"><div class="faint">Loading</div></div>';
+    return loadInbox();
+  }
+  function loadInbox() {
+    return api("GET", "/api/inbox?view=" + ib.view).then(function (r) {
+      ib.cards = r.cards; ib.counts = r.counts;
+      ib.idx = Math.min(ib.idx, Math.max(r.cards.length - 1, 0));
+      counts.inbox = r.counts.open; renderNav();
+      $$("#ib-seg button").forEach(function (b) { b.classList.toggle("on", b.getAttribute("data-v") === ib.view); });
+      renderInbox();
+    });
+  }
+  function renderInbox() {
+    var root = $("#ib-root");
+    if (!root) return;
+    releaseBlobs();
+    stopDictation();
+    var c = ib.counts || { open: 0, snoozed: 0, resolved: 0 };
+    var tabs = EMBED ? '<div class="ib-embed-tabs seg" id="ib-seg2">' + ["open", "snoozed", "resolved"].map(function (v) {
+      return '<button data-v="' + v + '" class="' + (v === ib.view ? "on" : "") + '">' + v[0].toUpperCase() + v.slice(1) + " " + c[v] + "</button>";
+    }).join("") + "</div>" : "";
+    if (ib.view === "resolved") { root.innerHTML = tabs + resolvedList(); bindEmbedTabs(); return; }
+    if (!ib.cards.length) {
+      root.innerHTML = tabs + '<div class="ib-empty card"><div class="ib-empty-mark">' + icon("check") + "</div><h2>" + (ib.view === "open" ? "Inbox zero" : "Nothing snoozed") +
+        '</h2><p class="muted">' + (ib.view === "open" ? "No agent is waiting on you." + (c.snoozed ? " " + c.snoozed + " snoozed." : "") : "Snoozed cards come back on their own.") +
+        '</p><p class="faint small">Agents add cards with <span class="mono">switchboard inbox submit</span>.</p></div>';
+      bindEmbedTabs(); return;
+    }
+    var k = ib.cards[ib.idx];
+    var meta = pill(k.priority.toUpperCase(), PRIO[k.priority]) +
+      (k.blockingCount ? '<span class="pill">blocks ' + esc(k.blockingCount) + "</span>" : "") +
+      '<span class="tag">' + esc(k.harness + (k.agent ? "/" + k.agent : "")) + "</span>" +
+      (k.project ? '<span class="tag">' + esc(k.project) + "</span>" : "") +
+      '<span class="faint small">' + esc(ago(k.createdAt)) + "</span>" +
+      (k.snoozedUntil && ib.view === "snoozed" ? '<span class="faint small">until ' + esc(new Date(k.snoozedUntil).toLocaleString()) + "</span>" : "");
+    var opts = k.options.map(function (o, i) {
+      return '<button class="ib-opt' + (i === 0 ? " rec" : "") + '" data-key="' + esc(o.key) + '"><kbd>' + esc(o.key) + "</kbd><span>" + esc(o.label) + "</span></button>";
+    }).join("");
+    var arts = k.artifacts.length ? '<div class="ib-arts">' + k.artifacts.map(function (a, i) {
+      return '<figure><img data-art="' + i + '" alt="' + esc(a.caption || a.file) + '">' + (a.caption ? "<figcaption>" + esc(a.caption) + "</figcaption>" : "") + "</figure>";
+    }).join("") + "</div>" : "";
+    root.innerHTML = tabs +
+      '<div class="ib-nav"><button class="icon-btn" id="ib-prev" title="Previous (k)">&lsaquo;</button><span class="mono small faint">' + (ib.idx + 1) + " of " + ib.cards.length + '</span><button class="icon-btn" id="ib-next" title="Next (j)">&rsaquo;</button></div>' +
+      '<article class="ib-card card"><div class="ib-meta">' + meta + "</div>" +
+      '<h2 class="ib-title">' + esc(k.title) + '</h2><p class="ib-summary">' + esc(k.summary) + "</p>" + arts +
+      '<div class="ib-opts">' + opts + "</div>" +
+      '<div class="ib-feedback"><textarea id="ib-fb" rows="2" maxlength="2000" placeholder="Optional feedback for the agent (f to type, v to dictate)"></textarea>' +
+      '<button class="icon-btn" id="ib-mic" title="Dictate (v)">' + icon("mic") + "</button></div>" +
+      '<div class="ib-actions"><button class="btn sm" id="ib-z2">' + icon("clock") + '<span>Snooze 2h</span><kbd>s</kbd></button>' +
+      '<button class="btn sm" id="ib-zt"><span>Tomorrow</span><kbd>S</kbd></button>' +
+      '<button class="btn sm' + (ib.rule ? " on" : "") + '" id="ib-rule" aria-pressed="' + ib.rule + '">' + icon("pin") + '<span>Save as rule</span><kbd>m</kbd></button></div>' +
+      "</article>" +
+      '<div class="ib-keys faint small"><span><kbd>1</kbd>-<kbd>4</kbd> decide</span><span><kbd>a</kbd> approve</span><span><kbd>s</kbd> snooze</span><span><kbd>m</kbd> rule</span><span><kbd>v</kbd> dictate</span><span><kbd>j</kbd>/<kbd>k</kbd> move</span></div>';
+    $$(".ib-opt", root).forEach(function (b) { b.onclick = function () { decideCard(b.getAttribute("data-key")); }; });
+    $("#ib-prev").onclick = function () { moveCard(-1); };
+    $("#ib-next").onclick = function () { moveCard(1); };
+    $("#ib-z2").onclick = function () { snoozeCard("2h"); };
+    $("#ib-zt").onclick = function () { snoozeCard("tomorrow"); };
+    $("#ib-rule").onclick = toggleRule;
+    $("#ib-mic").onclick = toggleDictation;
+    bindEmbedTabs();
+    k.artifacts.forEach(function (a, i) {
+      fetch("/api/inbox/artifact/" + encodeURIComponent(k.id) + "/" + encodeURIComponent(a.file), { headers: { "x-switchboard-token": TOKEN } })
+        .then(function (r) { if (!r.ok) throw new Error("HTTP " + r.status); return r.blob(); })
+        .then(function (b) { var u = URL.createObjectURL(b); ib.blobs.push(u); var img = $('[data-art="' + i + '"]', root); if (img) img.src = u; })
+        .catch(function () { var img = $('[data-art="' + i + '"]', root); if (img) img.replaceWith(Object.assign(document.createElement("div"), { className: "faint small", textContent: "image unavailable" })); });
+    });
+  }
+  function bindEmbedTabs() {
+    $$("#ib-seg2 button").forEach(function (b) { b.onclick = function () { ib.view = b.getAttribute("data-v"); ib.idx = 0; loadInbox().catch(fail); }; });
+  }
+  function resolvedList() {
+    if (!ib.cards.length) return '<div class="card"><div class="empty">No resolved decisions yet. Resolved cards are kept for 30 days.</div></div>';
+    return '<div class="card"><ul class="list">' + ib.cards.map(function (k) {
+      return '<li><div class="grow"><div>' + esc(k.title) + '</div><div class="faint small">' + esc(k.harness) + " &middot; " + esc(ago(k.decidedAt)) + " &middot; " +
+        esc(k.decisionLabel) + (k.feedback ? " &middot; &ldquo;" + esc(k.feedback) + "&rdquo;" : "") + "</div></div>" +
+        (k.savedAsRule ? pill("rule", "ok") : "") + (k.pickedUpAt ? pill("picked up", "") : pill("waiting for agent", "warn")) + "</li>";
+    }).join("") + "</ul></div>";
+  }
+  function moveCard(d) {
+    if (!ib.cards.length) return;
+    ib.idx = (ib.idx + d + ib.cards.length) % ib.cards.length;
+    ib.rule = false;
+    renderInbox();
+  }
+  function toggleRule() {
+    ib.rule = !ib.rule;
+    var b = $("#ib-rule");
+    if (b) { b.classList.toggle("on", ib.rule); b.setAttribute("aria-pressed", String(ib.rule)); }
+    toast(ib.rule ? "This decision will be saved as a standing rule in memory/" : "Rule off");
+  }
+  function decideCard(key) {
+    var k = ib.cards[ib.idx];
+    if (!k || ib.busy || ib.view === "resolved") return;
+    if (!k.options.some(function (o) { return o.key === key; })) return;
+    ib.busy = true;
+    var fb = $("#ib-fb") ? $("#ib-fb").value.trim() : "";
+    api("POST", "/api/inbox/" + encodeURIComponent(k.id) + "/decide", { decision: key, feedback: fb || undefined, save_rule: ib.rule })
+      .then(function (r) {
+        toast("Decided: " + r.card.decisionLabel + (r.rule ? " (rule saved)" : ""));
+        ib.rule = false;
+        if (r.rule) refreshGit();
+        return loadInbox();
+      })
+      .catch(fail)
+      .then(function () { ib.busy = false; });
+  }
+  function snoozeCard(until) {
+    var k = ib.cards[ib.idx];
+    if (!k || ib.busy || ib.view === "resolved") return;
+    ib.busy = true;
+    api("POST", "/api/inbox/" + encodeURIComponent(k.id) + "/snooze", { until: until })
+      .then(function () { toast("Snoozed until " + (until === "2h" ? "2 hours from now" : "tomorrow 9am")); return loadInbox(); })
+      .catch(fail)
+      .then(function () { ib.busy = false; });
+  }
+  // Free, on-device-or-browser dictation via the Web Speech API. Nothing is sent to Switchboard
+  // until you decide; the transcript lands in the feedback box where you can edit it.
+  function stopDictation() { if (ib.rec) { try { ib.rec.stop(); } catch (e) { /* already stopped */ } ib.rec = null; } var m = $("#ib-mic"); if (m) m.classList.remove("live"); }
+  function toggleDictation() {
+    if (ib.rec) { stopDictation(); return; }
+    var SR = window.SpeechRecognition || window.webkitSpeechRecognition;
+    var box = $("#ib-fb");
+    if (!SR || !box) { toast("Dictation is not available in this browser. Type instead, or use the OS dictation key.", true); if (box) box.focus(); return; }
+    var rec = new SR();
+    rec.continuous = true; rec.interimResults = true; rec.lang = navigator.language || "en-US";
+    var base = box.value ? box.value.replace(/\s*$/, " ") : "";
+    rec.onresult = function (e) {
+      var finalText = "", interim = "";
+      for (var i = 0; i < e.results.length; i++) { if (e.results[i].isFinal) finalText += e.results[i][0].transcript; else interim += e.results[i][0].transcript; }
+      box.value = (base + finalText + interim).slice(0, 2000);
+    };
+    rec.onerror = function (e) { toast("Dictation stopped: " + (e.error || "error"), true); stopDictation(); };
+    rec.onend = function () { if (ib.rec === rec) stopDictation(); };
+    try { rec.start(); ib.rec = rec; $("#ib-mic").classList.add("live"); toast("Listening. Press v again to stop."); } catch (err) { fail(err); }
+  }
+  document.addEventListener("keydown", function (e) {
+    if (!inboxActive() || e.metaKey || e.ctrlKey || e.altKey) return;
+    if (!$("#palette").hidden || !$("#modal").hidden) return;
+    var typing = /^(INPUT|TEXTAREA|SELECT)$/.test((e.target && e.target.tagName) || "");
+    if (typing) { if (e.key === "Escape") e.target.blur(); return; }
+    var k = e.key, handled = true;
+    if (/^[1-4]$/.test(k)) decideCard(k);
+    else if (k === "a") decideCard("1");
+    else if (k === "s") snoozeCard("2h");
+    else if (k === "S") snoozeCard("tomorrow");
+    else if (k === "m") { if (ib.view !== "resolved" && ib.cards.length) toggleRule(); }
+    else if (k === "v") { if ($("#ib-fb")) toggleDictation(); }
+    else if (k === "f") { var fb = $("#ib-fb"); if (fb) fb.focus(); }
+    else if (k === "j" || k === "ArrowRight") moveCard(1);
+    else if (k === "k" || k === "ArrowLeft") moveCard(-1);
+    else handled = false;
+    if (handled) e.preventDefault();
+  });
 
   // ---------- command palette ----------
   var palItems = [], palSel = 0, palNotes = [], palSkills = [];
@@ -675,7 +860,7 @@
     render();
   });
   api("GET", "/api/dashboard").then(function (d) {
-    counts = { memory: d.counts.notes, handoffs: d.counts.handoffs, skills: d.counts.skills, secrets: d.counts.secrets };
+    counts = { inbox: d.inboxOpenCount, memory: d.counts.notes, handoffs: d.counts.handoffs, skills: d.counts.skills, secrets: d.counts.secrets };
     gitState = d.git;
     $("#home-path").textContent = d.home;
     renderNav();

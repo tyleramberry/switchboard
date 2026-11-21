@@ -1,13 +1,14 @@
 import { test, before, after } from "node:test";
 import assert from "node:assert/strict";
 import { request } from "node:http";
-import { mkdtempSync, rmSync, readFileSync, existsSync } from "node:fs";
+import { mkdtempSync, rmSync, readFileSync, existsSync, writeFileSync } from "node:fs";
 import { spawnSync } from "node:child_process";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { KeychainStore } from "../src/secrets/keychain.js";
 import { startUi, UiHandle, nearDuplicates } from "../src/ui/server.js";
 import { pinPathFor, writeManifestPin } from "../src/manifest.js";
+import { Switchboard } from "../src/server.js";
 import { tempHome, tempKeychain, writeTestManifest } from "./helpers.js";
 
 const VALUE = "sb-dummy-ui-" + "cafe".repeat(5);
@@ -45,7 +46,7 @@ after(async () => {
 });
 
 function raw(method: string, path: string, opts: { headers?: Record<string, string>; body?: unknown; host?: string } = {}) {
-  return new Promise<{ status: number; text: string; json: any }>((ok, fail) => {
+  return new Promise<{ status: number; text: string; json: any; headers: Record<string, any>; bytes: Buffer }>((ok, fail) => {
     const body = opts.body === undefined ? undefined : JSON.stringify(opts.body);
     const req = request(
       {
@@ -56,13 +57,15 @@ function raw(method: string, path: string, opts: { headers?: Record<string, stri
         headers: { host: opts.host ?? `127.0.0.1:${ui.port}`, ...(body ? { "content-type": "application/json" } : {}), ...opts.headers },
       },
       (res) => {
-        let text = "";
-        res.on("data", (d) => (text += d));
+        const chunks: Buffer[] = [];
+        res.on("data", (d) => chunks.push(d));
         res.on("end", () => {
+          const bytes = Buffer.concat(chunks);
+          const text = bytes.toString("utf8");
           seen.push(text);
           let json: any = null;
           try { json = JSON.parse(text); } catch { /* not json */ }
-          ok({ status: res.statusCode ?? 0, text, json });
+          ok({ status: res.statusCode ?? 0, text, json, headers: res.headers, bytes });
         });
       },
     );
@@ -252,9 +255,91 @@ test("near-duplicate detection", () => {
   assert.equal(d[0].a, "a.md");
 });
 
+const PNG = Buffer.concat([Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]), Buffer.alloc(24)]);
+const inboxIds: Record<string, string> = {};
+
+test("inbox: queue in leverage order with counts on the dashboard", async () => {
+  const img = join(dirs, "header.png");
+  writeFileSync(img, PNG);
+  const sb = new Switchboard({ root: home.root, store: new KeychainStore(kc.path) });
+  try {
+    inboxIds.low = (await sb.inboxSubmit({ title: "Low", summary: "s", options: ["a", "b"], harness: "hermes", priority: "p3" })).id;
+    inboxIds.top = (await sb.inboxSubmit({ title: "Top", summary: "s", options: ["Ship (Recommended)", "Hold"], harness: "claude-code", priority: "p0", blockingCount: 4, artifacts: [{ path: img, caption: "new header" }] })).id;
+    inboxIds.mid = (await sb.inboxSubmit({ title: "Mid", summary: "s", options: ["a", "b"], harness: "hermes", priority: "p1", project: "portfolio" })).id;
+  } finally {
+    sb.close();
+  }
+  const r = await call("GET", "/api/inbox");
+  assert.equal(r.status, 200, r.text);
+  assert.equal(r.json.view, "open");
+  assert.deepEqual(r.json.cards.map((c: any) => c.title), ["Top", "Mid", "Low"]);
+  assert.deepEqual(r.json.counts, { open: 3, snoozed: 0, resolved: 0 });
+  assert.equal(r.json.cards[0].artifacts[0].caption, "new header");
+  assert.equal((await call("GET", "/api/inbox?view=bogus")).status, 400);
+  assert.equal((await raw("GET", "/api/inbox")).status, 401, "inbox needs the token");
+  const d = await call("GET", "/api/dashboard");
+  assert.equal(d.json.inboxOpenCount, 3);
+});
+
+test("inbox: artifact served as an image, traversal and unknown names refused", async () => {
+  const card = (await call("GET", "/api/inbox")).json.cards[0];
+  const file = card.artifacts[0].file;
+  const a = await call("GET", `/api/inbox/artifact/${card.id}/${file}`);
+  assert.equal(a.status, 200);
+  assert.equal(a.headers["content-type"], "image/png");
+  assert.equal(a.headers["x-content-type-options"], "nosniff");
+  assert.deepEqual(a.bytes, PNG);
+  assert.equal((await raw("GET", `/api/inbox/artifact/${card.id}/${file}`)).status, 401);
+  for (const p of [
+    `/api/inbox/artifact/${card.id}/..%2F..%2F..%2Fsecrets.manifest.yaml`,
+    `/api/inbox/artifact/..%2F..%2Fmemory/x.png`,
+    `/api/inbox/artifact/${card.id}/%2Fetc%2Fpasswd`,
+    `/api/inbox/artifact/${card.id}/2-other.png`,
+    `/api/inbox/artifact/${card.id}/../../index.db`,
+  ]) {
+    const r = await call("GET", p);
+    assert.ok(r.status === 400 || r.status === 404, `${p} -> ${r.status}`);
+    assert.equal(r.bytes.includes(Buffer.from("TEST_TOKEN")), false);
+  }
+});
+
+test("inbox: snooze and decide (with save_rule) over the API", async () => {
+  const z = await call("POST", `/api/inbox/${inboxIds.low}/snooze`, { until: "2h" });
+  assert.equal(z.status, 200, z.text);
+  assert.ok(z.json.snoozedUntil);
+  assert.equal((await call("POST", `/api/inbox/${inboxIds.low}/snooze`, { until: "later" })).status, 400);
+  assert.deepEqual((await call("GET", "/api/inbox?view=snoozed")).json.cards.map((c: any) => c.id), [inboxIds.low]);
+
+  const leak = await call("POST", `/api/inbox/${inboxIds.top}/decide`, { decision: "1", feedback: `here ${VALUE}` });
+  assert.equal(leak.status, 422);
+  const d = await call("POST", `/api/inbox/${inboxIds.top}/decide`, { decision: "1", feedback: "Ship headers with the smaller font", save_rule: true });
+  assert.equal(d.status, 200, d.text);
+  assert.equal(d.json.card.status, "resolved");
+  assert.equal(d.json.card.savedAsRule, true);
+  const note = (await call("GET", `/api/memory/note?path=${encodeURIComponent(d.json.rule.path)}`)).json.note;
+  assert.equal(note.type, "preference");
+  assert.match(note.body, /smaller font/);
+  assert.equal((await call("POST", `/api/inbox/${inboxIds.top}/decide`, { decision: "2" })).status, 409, "already resolved");
+  assert.equal((await call("POST", `/api/inbox/ib_000000000000/decide`, { decision: "1" })).status, 404);
+  assert.equal((await call("POST", `/api/inbox/..%2Fx/decide`, { decision: "1" })).status, 400);
+  assert.equal((await call("POST", `/api/inbox/${inboxIds.mid}/decide`, {})).status, 400, "decision required");
+  const plain = await call("POST", `/api/inbox/${inboxIds.mid}/decide`, { decision: "2" });
+  assert.equal(plain.json.rule, null);
+  assert.deepEqual((await call("GET", "/api/inbox")).json.counts, { open: 0, snoozed: 1, resolved: 2 });
+});
+
+test("inbox: embed mode is served by the same CSP-locked page", async () => {
+  const r = await raw("GET", "/?embed=inbox");
+  assert.equal(r.status, 200);
+  assert.match(String(r.headers["content-security-policy"]), /frame-ancestors 'none'/);
+  assert.match(String(r.headers["content-security-policy"]), /img-src 'self' data: blob:/);
+  const js = (await raw("GET", "/app.js")).text;
+  for (const needle of ["embed", "SpeechRecognition", "/api/inbox", "save_rule"]) assert.ok(js.includes(needle), needle);
+});
+
 test("no API response ever contained a secret value", async () => {
   // sweep every read endpoint once more, then grep everything collected during this file
-  for (const p of ["/api/dashboard", "/api/memory", "/api/handoffs", "/api/skills", "/api/secrets", "/api/harnesses", "/api/git", "/api/harnesses/claude-code/diff"]) {
+  for (const p of ["/api/inbox", "/api/inbox?view=resolved", "/api/dashboard", "/api/memory", "/api/handoffs", "/api/skills", "/api/secrets", "/api/harnesses", "/api/git", "/api/harnesses/claude-code/diff"]) {
     assert.equal((await call("GET", p)).status, 200, p);
   }
   assert.ok(seen.length > 40);

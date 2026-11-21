@@ -3,6 +3,7 @@ import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js"
 import { z } from "zod";
 import { homePaths } from "./home.js";
 import { MemoryStore } from "./memory.js";
+import { InboxStore, InboxCard, SubmitInput } from "./inbox.js";
 import { SkillStore } from "./skills.js";
 import { loadManifest, Manifest, SecretSpec } from "./manifest.js";
 import { SecretStore } from "./secrets/store.js";
@@ -26,6 +27,8 @@ type ToolResult = { content: { type: "text"; text: string }[]; isError?: boolean
 export class Switchboard {
   readonly memory: MemoryStore;
   readonly skills: SkillStore;
+  /** Decision inbox. CLI and UI only: deliberately not exposed as MCP tools (0 schema tokens). */
+  readonly inbox: InboxStore;
   readonly paths: ReturnType<typeof homePaths>;
   private stores = new Map<string, SecretStore>();
 
@@ -33,6 +36,7 @@ export class Switchboard {
     this.paths = homePaths(opts.root);
     this.memory = new MemoryStore(opts.root);
     this.skills = new SkillStore(opts.root);
+    this.inbox = new InboxStore(opts.root);
     if (opts.store) this.stores.set(opts.store.kind, opts.store);
   }
 
@@ -113,9 +117,67 @@ export class Switchboard {
     return input.argv ? runCommand(spec, { argv: input.argv }, ctx) : runHttp(spec, input.http!, ctx);
   }
 
+  /** Validate caps, refuse secrets in every text field, then store the card. */
+  async inboxSubmit(input: SubmitInput): Promise<InboxCard> {
+    const v = this.inbox.validate(input);
+    const reason = await this.memoryLeakReason(
+      [v.title, v.summary, v.harness, v.agent, v.project, ...v.options.map((o) => o.label), ...v.artifacts.map((a) => a.caption)].join("\n"),
+    );
+    if (reason) throw new PolicyError(`refused: ${reason}`);
+    return this.inbox.submit(input);
+  }
+
+  /**
+   * Resolve a card. With `saveRule`, also write a `preference` note to memory/ so every
+   * harness learns the standing rule at once (no model call, no tokens).
+   */
+  async inboxDecide(
+    id: string,
+    input: { decision: string; feedback?: string; saveRule?: boolean; source?: string },
+  ): Promise<{ card: InboxCard; rule: { path: string } | null }> {
+    const card = this.inbox.get(id);
+    const reason = await this.memoryLeakReason([input?.decision ?? "", input?.feedback ?? ""].join("\n"));
+    if (reason) throw new PolicyError(`refused: ${reason}`);
+    let resolved = this.inbox.decide(card.id, { decision: input.decision, feedback: input.feedback });
+    let rule: { path: string } | null = null;
+    if (input.saveRule) {
+      const note = ruleNote(resolved, input.source);
+      const leak = await this.memoryLeakReason([note.title, note.body, ...note.tags].join("\n"));
+      if (leak) throw new PolicyError(`refused: ${leak}`);
+      rule = this.memory.write(note);
+      resolved = this.inbox.markSavedAsRule(resolved.id);
+    }
+    return { card: resolved, rule };
+  }
+
   close(): void {
     this.memory.close();
+    this.inbox.close();
   }
+}
+
+/** The memory note written when a decision is saved as a standing rule. */
+export function ruleNote(card: InboxCard, source?: string) {
+  const lines = [
+    `Standing rule from an inbox decision (${card.decidedAt?.slice(0, 10) ?? ""}).`,
+    "",
+    `- Question: ${card.title}`,
+    `- Context: ${card.summary}`,
+    `- Chosen: ${card.decisionLabel}`,
+  ];
+  const others = card.options.filter((o) => o.key !== card.decision).map((o) => o.label);
+  if (others.length) lines.push(`- Not chosen: ${others.join("; ")}`);
+  if (card.feedback) lines.push(`- Feedback: ${card.feedback}`);
+  lines.push("", `Apply this by default to similar decisions${card.project ? ` in ${card.project}` : ""}. Source card: ${card.id} (${card.harness}).`);
+  const tags = ["inbox-rule", card.harness];
+  if (card.project && !tags.includes(card.project)) tags.push(card.project);
+  return {
+    title: `Rule: ${card.title}`.slice(0, 200),
+    body: lines.join("\n"),
+    type: "preference",
+    tags,
+    source: source ?? "switchboard-inbox",
+  };
 }
 
 /** Wrap a handler: JSON result, errors as isError, and a final scrub of everything returned. */

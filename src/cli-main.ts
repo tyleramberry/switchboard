@@ -6,6 +6,7 @@ import { runDoctor, formatFindings, DoctorFinding } from "./doctor.js";
 import { createStore } from "./secrets/index.js";
 import { serveStdio, Switchboard, VERSION } from "./server.js";
 import { HARNESSES, runSetup } from "./installers/index.js";
+import { InboxCard, InboxView } from "./inbox.js";
 
 const USAGE = `switchboard ${VERSION}
 
@@ -23,6 +24,16 @@ Usage:
   switchboard doctor                       lint the secrets manifest (over-broad allowlists, interpreters, pin state)
   switchboard search <query>               memory_search from the terminal
   switchboard ui [--port N] [--no-open]    local web UI on 127.0.0.1 (default port 7337)
+  switchboard inbox <command> [--json]     agent decision inbox (CLI only, no MCP tools)
+      submit --title T --summary S --option A --option B [--option ...] --harness H
+             [--agent A] [--project P] [--priority p0|p1|p2|p3] [--blocks N]
+             [--artifact /abs/shot.png:caption]
+      list [--view open|snoozed|resolved] [--harness H]
+      status <id>
+      decide <id> --decision 1|"free text" [--feedback F] [--save-rule]
+      snooze <id> --until 2h|tomorrow|ISO
+      poll [--harness H] [--agent A] [--ack]
+      distill-export [--mark-distilled]
 `;
 
 function flag(args: string[], name: string): string | undefined {
@@ -32,6 +43,99 @@ function flag(args: string[], name: string): string | undefined {
   if (!v || v.startsWith("--")) throw new Error(`${name} needs a value`);
   args.splice(i, 2);
   return v;
+}
+
+function multi(args: string[], name: string): string[] {
+  const out: string[] = [];
+  for (let v = flag(args, name); v !== undefined; v = flag(args, name)) out.push(v);
+  return out;
+}
+
+/** `/abs/shot.png:caption` (caption optional; the path ends at the image extension). */
+function artifactArg(s: string): { path: string; caption: string } {
+  const m = /^(.+?\.(?:png|jpe?g|gif|webp))(?::([\s\S]*))?$/i.exec(s);
+  return m ? { path: m[1], caption: (m[2] ?? "").replace(/^"|"$/g, "") } : { path: s, caption: "" };
+}
+
+function cardLine(c: InboxCard): string {
+  const when = c.status === "resolved" ? `decided ${c.decidedAt} -> ${c.decisionLabel}` : c.snoozedUntil ? `snoozed until ${c.snoozedUntil}` : `created ${c.createdAt}`;
+  return `${c.id}  ${c.priority}  blocks ${c.blockingCount}  ${c.harness}${c.agent ? "/" + c.agent : ""}  ${c.title}\n    ${when}`;
+}
+
+async function inbox(root: string, args: string[]): Promise<number> {
+  const sub = args.shift();
+  const json = bool(args, "--json");
+  const out = (data: unknown, human: string) => console.log(json ? JSON.stringify(data, null, 2) : human);
+  const id = () => {
+    const v = args.shift();
+    if (!v || v.startsWith("--")) throw new Error(`inbox ${sub} needs a card id`);
+    return v;
+  };
+  const sb = new Switchboard({ root });
+  try {
+    switch (sub) {
+      case "submit": {
+        const blocks = flag(args, "--blocks");
+        const c = await sb.inboxSubmit({
+          title: flag(args, "--title") ?? "",
+          summary: flag(args, "--summary") ?? "",
+          options: multi(args, "--option"),
+          harness: flag(args, "--harness") ?? "",
+          agent: flag(args, "--agent"),
+          project: flag(args, "--project"),
+          priority: flag(args, "--priority"),
+          blockingCount: blocks === undefined ? undefined : Number(blocks),
+          artifacts: multi(args, "--artifact").map(artifactArg),
+        });
+        out({ id: c.id, status: c.status }, `${c.id} open`);
+        return 0;
+      }
+      case "list": {
+        const view = (flag(args, "--view") ?? "open") as InboxView;
+        const harness = flag(args, "--harness");
+        const pruned = sb.inbox.prune(30);
+        const cards = sb.inbox.list(view, { harness });
+        out({ view, pruned: pruned.removed, cards }, cards.length ? cards.map(cardLine).join("\n") : `no ${view} cards`);
+        return 0;
+      }
+      case "status": {
+        const c = sb.inbox.get(id());
+        out(c, `${cardLine(c)}${c.feedback ? `\n    feedback: ${c.feedback}` : ""}`);
+        return 0;
+      }
+      case "decide": {
+        const cardId = id();
+        const decision = flag(args, "--decision");
+        if (!decision) throw new Error("inbox decide needs --decision");
+        const r = await sb.inboxDecide(cardId, { decision, feedback: flag(args, "--feedback"), saveRule: bool(args, "--save-rule"), source: "switchboard-cli" });
+        out(r, `${r.card.id} resolved -> ${r.card.decisionLabel}${r.rule ? `\n    rule saved: memory/${r.rule.path}` : ""}`);
+        return 0;
+      }
+      case "snooze": {
+        const cardId = id();
+        const until = flag(args, "--until");
+        if (!until) throw new Error("inbox snooze needs --until");
+        const c = sb.inbox.snooze(cardId, until);
+        out(c, `${c.id} snoozed until ${c.snoozedUntil}`);
+        return 0;
+      }
+      case "poll": {
+        const cards = sb.inbox.poll({ harness: flag(args, "--harness"), agent: flag(args, "--agent"), ack: bool(args, "--ack") });
+        out({ cards }, cards.length ? cards.map(cardLine).join("\n") : "no new decisions");
+        return 0;
+      }
+      case "distill-export": {
+        const cards = sb.inbox.distillExport({ markDistilled: bool(args, "--mark-distilled") });
+        out({ cards }, cards.length ? cards.map(cardLine).join("\n") : "nothing to distill");
+        return 0;
+      }
+      default:
+        console.error(`unknown inbox command: ${sub ?? ""}\n\n${USAGE}`);
+        return 2;
+    }
+  } finally {
+    sb.close();
+  }
 }
 
 function bool(args: string[], name: string): boolean {
@@ -131,6 +235,8 @@ export async function main(argv: string[]): Promise<number> {
           process.once("SIGTERM", stop);
         });
       }
+      case "inbox":
+        return await inbox(root, args);
       case "search": {
         const sb = new Switchboard({ root });
         console.log(JSON.stringify(sb.memory.search(args.join(" ")), null, 2));

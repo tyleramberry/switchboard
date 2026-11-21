@@ -11,6 +11,10 @@ export interface HomePaths {
   state: string;
   index: string;
   audit: string;
+  /** SQLite decision inbox (ephemeral, gitignored with the rest of .switchboard/). */
+  inboxDb: string;
+  /** Copied card screenshots, one dir per card id. */
+  inboxArtifacts: string;
 }
 
 export function resolveHome(env: NodeJS.ProcessEnv = process.env): string {
@@ -29,6 +33,8 @@ export function homePaths(root: string): HomePaths {
     state: join(root, ".switchboard"),
     index: join(root, ".switchboard", "index.db"),
     audit: join(root, ".switchboard", "audit.jsonl"),
+    inboxDb: join(root, ".switchboard", "inbox.db"),
+    inboxArtifacts: join(root, ".switchboard", "inbox-artifacts"),
   };
 }
 

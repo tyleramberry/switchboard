@@ -8,7 +8,8 @@
     "build": "tsc -p .",
     "test": "tsc -p . && node --test --test-concurrency=1 \"dist/test/**/*.test.js\"",
     "redteam": "tsc -p . && node dist/redteam/run.js",
-    "handoff": "tsc -p . && node dist/scripts/handoff.js"
+    "handoff": "tsc -p . && node dist/scripts/handoff.js",
+    "distill": "tsc -p . && node dist/scripts/distill-inbox.js"
   },
   "repository": {
     "type": "git",

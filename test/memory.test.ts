@@ -88,7 +88,7 @@ test("skills list and get, with containment", () => {
     mkdirSync(join(h.root, "skills", "demo"));
     writeFileSync(join(h.root, "skills", "demo", "SKILL.md"), "---\nname: demo\ndescription: Use when testing.\n---\nbody");
     const names = s.list().map((x) => x.name);
-    assert.deepEqual(names, ["demo", "switchboard-handoff"]);
+    assert.deepEqual(names, ["demo", "switchboard-handoff", "switchboard-inbox"]);
     assert.match(s.get("demo").content, /body/);
     assert.throws(() => s.get("demo", "../../secrets.manifest.yaml"), /escapes/);
     assert.throws(() => s.get("../memory"), /invalid skill name/);

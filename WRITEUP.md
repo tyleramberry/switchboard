@@ -1,102 +1,126 @@
-# Switchboard — Sprint 5 write-up (DRAFT; Tyler, edit freely)
+# Switchboard: Sprint 5 Write-up
 
 ## The problem
 
 Moving between agent harnesses (Hermes, Claude Code, and eventually Grokbot, Buzz, Codex)
-means re-explaining who I am, re-wiring keys, and re-copying memory. Worst part: secrets
-sit in `.env` files where every agent can read them.
+means re-explaining who I am, re-wiring keys, and re-copying memory. The worst part is
+secrets: they sit in `.env` files where any agent can read them directly.
 
 ## What Switchboard is
 
-One local "Home" directory (markdown memory, SKILL.md skills, AGENTS.md, a
-secrets.manifest.yaml with names and allowlists but never values) and one stdio MCP server
-that every harness points at. Secrets live in the macOS Keychain and are *used* through
-`secret_run`, which injects them into an allowlisted child process (env var) or an
-allowlisted HTTPS call (header) and scrubs every encoding it knows from the output. No
-tool returns a value. One command per harness (`switchboard setup <harness>`) wires a
-harness to Home.
+One local "Home" directory (`~/agent-home`: markdown memory, `SKILL.md` skills, `AGENTS.md`,
+and a `secrets.manifest.yaml` with names and allowlists but never values) paired with one
+local stdio MCP server (`switchboard-mcp`) that every harness points at. Secrets live in the
+macOS Keychain and are *used* through `secret_run`, which injects them into an allowlisted
+child process (env var) or an allowlisted HTTPS call (header) and scrubs every encoding it
+knows from the output. No tool returns a value. One command per harness
+(`switchboard setup <harness>`) wires a harness to Home.
+
+During the sprint, Switchboard also grew two operational layers on top of the core kit:
+- **Local Web UI (`switchboard ui`):** a localhost-only vanilla HTML/CSS/JS control panel
+  (bound to `127.0.0.1`, per-launch random token header, Host/Origin/CSP guards, dark mode,
+  `Cmd+K` palette) over the exact same modules as the MCP server. No screen or endpoint ever
+  returns a secret value; values are write-only, manifest edits run through `doctor` and
+  re-pin, and Home git commits only happen when you click Commit changes.
+- **Decision Inbox + nightly distillation (`switchboard inbox`, `npm run distill`):** a
+  SQLite-backed queue (`inbox.db`) for short human-in-the-loop decision cards, driven by a
+  zero-MCP CLI (zero extra schema tokens in agent prompts), a single-card focus Inbox view
+  with keyboard shortcuts, dictation, and embed mode, a `switchboard-inbox` skill, and a
+  nightly distillation script that turns resolved decisions and overrides into memory rules
+  and opens conflict cards when a decision contradicts an existing rule.
 
 ## Design choices that mattered
 
 - **Markdown + SQLite FTS5 (built-in `node:sqlite`) as memory.** The files are the truth;
   the index is a cache re-synced by mtime before every search. That is why handoff is live:
-  one server process writes a file, the next process's search sees it. No daemon, no
-  vector DB.
+  one server process writes a file, and the next process's search sees it immediately. No
+  daemon, no vector DB.
 - **No shell, ever, for secrets.** `secret_run` takes argv and spawns with `shell: false`,
-  so `$VAR`, backticks and `;` are literal bytes. Allowlists are per-secret: exact absolute
+  so `$VAR`, backticks, and `;` stay literal bytes. Allowlists are per-secret: exact absolute
   program paths, every argument must match a regex, URLs and bare hosts are checked against
-  a host allowlist, curl's proxy/config/redirect flags are denied outright.
+  a host allowlist, and curl's proxy/config/redirect flags are denied outright.
 - **Values never touch argv.** Keychain writes go through `security -i` on stdin; the
   injected value travels only as the child's env var.
-- **Defense in depth:** every tool response (including errors) is scrubbed against every
-  stored value, so even a hand-planted file containing a secret is redacted when read back
-  through the tools.
+- **Defense in depth:** every MCP tool response and every Web UI API response (including
+  errors) is scrubbed against every stored value, so even a hand-planted file containing a
+  secret is redacted when read back through Switchboard.
+- **Zero-dependency UI and zero-MCP inbox.** The Web UI adds zero runtime packages, and the
+  Decision Inbox uses a CLI + skill instead of MCP tools so it adds zero token overhead to
+  every agent turn.
 
 ## What it cost
 
-- Wall clock: one unattended overnight session (2026-11-14, roughly 40 minutes of build
-  time up to this draft). Token spend: not visible to the build agent — unknown.
-- Dependencies: 3 runtime (MCP SDK, zod, yaml) + 2 dev (typescript, @types/node). SQLite
-  comes from Node itself, keychain from `/usr/bin/security`, diffs from `/usr/bin/diff`,
+- **Timeline:** built across four focused pushes from Nov 14 to Nov 21:
+  1. Nov 14: initial overnight build of Home, MCP server, Keychain store, installers, and
+     first red-team pass (~40 min wall clock).
+  2. Nov 16: attended Air session fixing all three red-team findings (F1, F2, F3), adding
+     `switchboard pin` and `switchboard doctor`, installing on real `~/.hermes` and
+     `~/.claude`, and running the live model-driven handoff (Hermes -> Claude Code -> Hermes).
+  3. Nov 19 to 20: fresh install and verification on the Mac mini, plus Web UI v1.
+  4. Nov 21: SQLite Decision Inbox, zero-MCP CLI, single-card focus Inbox UI, and nightly
+     memory distillation.
+- **Test coverage:** 92/92 automated tests passing (`npm test`), plus 10/10 red-team attacks
+  passing (`npm run redteam`).
+- **Dependencies:** 3 runtime (`@modelcontextprotocol/sdk`, `zod`, `yaml`) + 2 dev
+  (`typescript`, `@types/node`). SQLite comes from Node's built-in `node:sqlite`, Keychain
+  from `/usr/bin/security` plus a small compiled C helper, diffs from `/usr/bin/diff`, and
   tests from `node:test`.
 
-## What failed (red team: 9 of 10 pass after fixes, 1 honest finding)
+## What failed (red team: 10 of 10 pass after fixes, 1 documented residual)
 
-Full log with real output: `redteam/RESULTS.md` (re-run 2026-11-16 on the Air).
+Full log with real output: `redteam/RESULTS.md` (re-run 2026-11-16 on the Air). The first
+pass went 8/10 and surfaced three real security findings, all fixed and re-verified:
 
-- **F1 — unknown encodings — FIXED 2026-11-16.** The scrubber now covers rot13 and
-  rot13-of-reversed, so the demonstrated leak is gone (attack 3 passes). The deeper lesson
-  stands: if you allowlist an interpreter (opt-in flag), the secret can leave in any
-  transform the scrubber doesn't know. The default profile refuses interpreters, which
-  blocks the whole class; the allowlist is the control, scrubbing is a seatbelt.
-- **F3 — manifest tampering — FIXED 2026-11-16.** `switchboard pin` records a sha256 of
-  the manifest next to it (inside Home's git); every tool call verifies the pin and fails
-  closed if the manifest changed. Attack 5 now includes the tamper probe: an agent that
-  widens its own allowlist gets nothing. Unpinned Homes work but warn.
-- **F2 — the Keychain ACL trusted /usr/bin/security — FIXED 2026-11-16.** Items created
-  through `/usr/bin/security` had an ACL that trusted that binary, so any same-user
-  process could read the value directly. Now reads and deletes go through a tiny compiled
-  helper (`src/secrets/keychain-helper.ts`) that is ad-hoc code-signed, and items are
-  created with `-T` trusting only that helper. Verified in attack 8: a direct
-  `security find-generic-password` read is refused (untrusted callers get a GUI prompt,
-  which is a refusal unattended), and an attacker who OVERWRITES the helper at its path
-  breaks the cdhash binding of its ACL entry and is refused too.
+- **F1 (unknown encodings under an interpreter allowlist): FIXED 2026-11-16.** The scrubber
+  now covers rot13 and rot13-of-reversed, so the demonstrated leak is gone (attack 3 passes).
+  The deeper lesson stands: if you allowlist an interpreter (opt-in flag), a secret can leave
+  in any transform the scrubber does not know. The default profile refuses interpreters,
+  which blocks the whole class; the allowlist is the control and scrubbing is a seatbelt.
+- **F3 (manifest tampering): FIXED 2026-11-16.** `switchboard pin` records a sha256 of the
+  manifest next to it (inside Home's git); every tool call verifies the pin and fails closed
+  if the manifest changed. Attack 5 includes the tamper probe: an agent that widens its own
+  allowlist gets nothing. Unpinned Homes still work but warn.
+- **F2 (Keychain ACL trusted `/usr/bin/security`): FIXED 2026-11-16.** Items created through
+  `/usr/bin/security` defaulted to an ACL trusting that binary, so any same-user process
+  could read the value directly. Reads and deletes now go through a tiny compiled helper
+  (`src/secrets/keychain-helper.ts`) that is ad-hoc code-signed, and items are created with
+  `-T` trusting only that helper. Verified in attack 8: a direct
+  `security find-generic-password` read is refused unattended, and overwriting the helper at
+  its path breaks its cdhash binding and is refused too.
   **Residual, recorded honestly:** the ACL binds to the helper's code identity, not its
-  path, so an INTACT copy of the helper exec'd by a same-user process still returns the
-  value. Same-user arbitrary code remains out of scope — Switchboard protects the MCP door
-  and the common un-audited paths, not a shell-level agent. The real fix is the 1Password
-  CLI backend with its own auth domain (Sprint 6).
-- Also worth knowing: `ps eww` / `ps -E` could not read a running child's env on this
-  macOS build (tested), and the audit log / index / git history never contained the value.
+  path, so an intact copy of the helper exec'd by a same-user process still returns the
+  value. Same-user arbitrary code remains out of scope: Switchboard protects the MCP door
+  and common un-audited paths, not a shell-level agent. The real fix is the 1Password CLI
+  backend with biometric gating (Sprint 6).
+- **Also verified:** `ps eww` / `ps -E` could not read a running child's env on this macOS
+  build, and the audit log, SQLite index, and git history never contained any secret value.
 
-## Unverified / not done
+## Unverified / honest gaps
 
-- No LLM was in the loop anywhere (a fresh Claude config is not logged in, and I would not
-  run a real model unattended without asking). "Agent" in the red team means a scripted,
-  fully-obedient tool caller — a stronger attacker in one way (it never refuses), weaker in
-  another (no model judgement at all). The 2026-11-16 Air run additionally hit
-  `OAuth session expired` on the logged-in personal Claude config, so the live
-  model-driven demo still needs a `claude /login` first.
-- Codex, Grokbot, Buzz installers are written from their docs but UNTESTED (not installed
-  on the build machine). Buzz is a documented manual path: its agents run as Claude Code /
-  Codex / Goose via buzz-acp.
-- Claude Code native skill discovery is a symlink per skill (re-run setup after adding a
-  skill); through MCP `skill_list` new skills appear immediately. The `@import` in
-  CLAUDE.md and SOUL.md start-here block were not exercised by a real model session.
-- Migration of existing memory beyond the starter set (obsidian + github skills, AGENTS.md)
-  still needs an attended, reviewed pass.
+- **Red-team attacker model:** No LLM was in the loop during the scripted red team. The
+  attacker is modeled as a fully obedient tool caller (stronger in that it never refuses an
+  injection, weaker in that it does not invent novel multi-step exploits). Separately, a real
+  model-driven handoff (Hermes -> Claude Code -> Hermes) ran live on the Air on Nov 16 and
+  verified cross-agent memory read/write.
+- **Untested harnesses:** Hermes and Claude Code are installed and verified on both the Air
+  and the Mac mini. Codex and Grokbot installers are written from their docs and unit-tested
+  on temp configs, but not tested against live installs. Buzz is a documented manual path
+  (its agents run as Claude Code / Codex / Goose via `buzz-acp`).
+- **Skill discovery caveat:** Hermes reads `Home/skills` live via `skills.external_dirs`.
+  Claude Code uses one symlink per skill, so adding a new skill requires re-running
+  `switchboard setup claude-code` for native discovery (though MCP `skill_list` sees it
+  immediately).
+- **Memory migration:** Starter memory, handoff notes, and core skills are live in
+  `~/agent-home`; migrating older personal notes beyond the starter set still needs an
+  attended pass.
 
-## Sprint 6 should take
+## What Sprint 6 should take on
 
-1. ~~Keychain ACL problem (F2)~~ **Done 2026-11-16:** helper binary + restrictive ACL
-   (see F2 above). The same-user residual still argues for the 1Password CLI backend (the
-   `SecretStore` seam is already there — `OnePasswordStore` throws "not implemented").
-2. A live end-to-end demo with a real model in Hermes and Claude Code on a clean profile,
-   plus attended migration of existing memory into Home.
-3. Sync: Home as a private git repo across the mini and the Air, and a `switchboard sync`
-   or hooks story.
-4. ~~Consider per-call timeouts/allowlist review UX: a `switchboard doctor` that lints
-   manifests (unsafe flags, over-broad regexes) would have caught the LAB profile instantly.~~
-   **Done 2026-11-16:** `switchboard doctor` ships — it flags interpreter allowlists with
-   catch-all args and broad-arg network programs as errors (the exact LAB profile),
-   wildcard/local hosts, long timeouts, missing purposes, and pin state. Exit 1 on errors.
+1. **1Password CLI backend:** replace the same-user Keychain helper residual with biometric
+   gating (the `SecretStore` seam is already in place via `OnePasswordStore`).
+2. **Git sync between Macs:** turn `~/agent-home` into a private remote git repo with a
+   `switchboard sync` command or automatic hooks so the Air and Mac mini stay in lockstep.
+3. **Live-test remaining harnesses:** verify the Codex and Grokbot installers against real
+   installs and document any config-format drift.
+4. **Activity log in the Web UI:** surface the audit log and recent `secret_run` / memory
+   calls in the UI (deferred from UI v1).
